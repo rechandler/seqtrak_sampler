@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seqtrak-sampler"
+version = "0.1.0"
+description = "Companion tools for the Yamaha SEQTRAK: convert .Y3S sound exports to WAV"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+y3s2wav = "seqtrak_sampler.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
