@@ -7,18 +7,19 @@ from array import array
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QCheckBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSplitter,
-    QVBoxLayout, QWidget,
+    QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
 from .. import audio
 from ..y3s import read_y3s
+from . import theme
 from .player import Player
 from .waveform import WaveformView
+from .widgets import ROLE_FITS, ROLE_SECONDS, LengthMeter, TakeDelegate, Toggle, play_icon, stop_icon
 
 THRESHOLD = audio.dbfs_to_amplitude(-60.0)
 PAD_MS = 5.0
@@ -68,81 +69,148 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("SEQTRAK Sampler")
         self.setAcceptDrops(True)
-        self.resize(900, 460)
+        self.resize(1040, 560)
+        self.setMinimumSize(820, 460)
         self.settings = QSettings("seqtrak_sampler", "SEQTRAK Sampler")
         self.takes: list[Take] = []
         self.player = Player(self)
 
-        self.list = QListWidget()
-        self.list.currentRowChanged.connect(self._show_take)
-        add_btn = QPushButton("Add files…")
+        # Header
+        logo = QLabel()
+        logo.setFixedSize(12, 12)
+        logo.setStyleSheet(f"background: {theme.ACCENT}; border-radius: 6px;")
+        title = QLabel("SEQTRAK Sampler")
+        title.setObjectName("appTitle")
+        subtitle = QLabel("Turn SEQTRAK resamples into synth-ready WAVs")
+        subtitle.setObjectName("appSubtitle")
+        add_btn = QPushButton("+  Add files")
         add_btn.clicked.connect(self._add_dialog)
-        self.remove_btn = QPushButton("Remove")
-        self.remove_btn.clicked.connect(self._remove_current)
-        left_col = QVBoxLayout()
-        left_col.addWidget(self.list)
-        row = QHBoxLayout()
-        row.addWidget(add_btn)
-        row.addWidget(self.remove_btn)
-        left_col.addLayout(row)
-        left_panel = QWidget()
-        left_panel.setLayout(left_col)
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        header.addWidget(logo)
+        header.addWidget(title)
+        header.addSpacing(6)
+        header.addWidget(subtitle)
+        header.addStretch()
+        header.addWidget(add_btn)
 
+        # Sidebar: the list of loaded sounds
+        samples_title = QLabel("SAMPLES")
+        samples_title.setObjectName("sectionTitle")
+        self.list = QListWidget()
+        self.list.setItemDelegate(TakeDelegate(self.list))
+        self.list.setMouseTracking(True)
+        self.list.currentRowChanged.connect(self._show_take)
+        self.remove_btn = QPushButton("Remove")
+        self.remove_btn.setObjectName("ghost")
+        self.remove_btn.clicked.connect(self._remove_current)
+        sidebar_col = QVBoxLayout()
+        sidebar_col.setContentsMargins(0, 4, 0, 0)
+        sidebar_col.addWidget(samples_title)
+        sidebar_col.addWidget(self.list, 1)
+        sidebar_col.addWidget(self.remove_btn, 0, Qt.AlignLeft)
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(230)
+        sidebar.setLayout(sidebar_col)
+
+        # Editor card
         self.name_edit = QLineEdit()
+        self.name_edit.setObjectName("nameEdit")
         self.name_edit.setPlaceholderText("Sample name")
         self.name_edit.textEdited.connect(self._rename)
+        self.format_label = QLabel("Stereo  ·  44.1 kHz  ·  16-bit WAV")
+        self.format_label.setObjectName("muted")
         self.wave = WaveformView()
         self.wave.regionChanged.connect(self._region_changed)
         self.player.position.connect(self.wave.set_playhead)
-        self.player.stopped.connect(lambda: self.play_btn.setText("▶ Play"))
-        self.length_label = QLabel()
+        self.player.stopped.connect(lambda: self.play_btn.setIcon(play_icon()))
+        self.play_btn = QPushButton()
+        self.play_btn.setObjectName("play")
+        self.play_btn.setFixedSize(40, 40)
+        self.play_btn.setIcon(play_icon())
+        self.play_btn.setToolTip("Play selection (Space)")
+        self.play_btn.clicked.connect(self._toggle_play)
+        QShortcut(QKeySequence(Qt.Key_Space), self, self._toggle_play)
         self.trim_btn = QPushButton("Auto-trim")
+        self.trim_btn.setToolTip("Trim leading and trailing silence")
         self.trim_btn.clicked.connect(self._auto_trim)
         self.cut_btn = QPushButton(f"Cut to {audio.MAX_SECONDS:g} s")
         self.cut_btn.clicked.connect(self._cut_to_limit)
-        self.play_btn = QPushButton("▶ Play")
-        self.play_btn.clicked.connect(self._toggle_play)
-        QShortcut(QKeySequence(Qt.Key_Space), self, self._toggle_play)
-        self.normalize_box = QCheckBox(f"Normalize ({NORMALIZE_DB:g} dB)")
+        self.normalize_box = Toggle(f"Normalize to {NORMALIZE_DB:g} dB")
         self.normalize_box.setChecked(self.settings.value("normalize", True, type=bool))
         self.normalize_box.toggled.connect(lambda on: self.settings.setValue("normalize", on))
+        self.meter = LengthMeter(audio.MAX_SECONDS)
 
         controls = QHBoxLayout()
-        for w in (self.play_btn, self.trim_btn, self.cut_btn, self.normalize_box):
-            controls.addWidget(w)
+        controls.setSpacing(8)
+        controls.addWidget(self.play_btn)
+        controls.addSpacing(6)
+        controls.addWidget(self.trim_btn)
+        controls.addWidget(self.cut_btn)
+        controls.addSpacing(14)
+        controls.addWidget(self.normalize_box)
         controls.addStretch()
-        controls.addWidget(self.length_label)
-        right_col = QVBoxLayout()
-        right_col.addWidget(self.name_edit)
-        right_col.addWidget(self.wave, 1)
-        right_col.addLayout(controls)
-        right_panel = QWidget()
-        right_panel.setLayout(right_col)
+        controls.addWidget(self.meter)
+        card_col = QVBoxLayout()
+        card_col.setContentsMargins(20, 16, 20, 18)
+        card_col.setSpacing(10)
+        name_row = QHBoxLayout()
+        name_row.addWidget(self.name_edit, 1)
+        name_row.addWidget(self.format_label)
+        card_col.addLayout(name_row)
+        card_col.addWidget(self.wave, 1)
+        card_col.addLayout(controls)
+        card = QWidget()
+        card.setObjectName("card")
+        card.setAttribute(Qt.WA_StyledBackground)
+        card.setLayout(card_col)
 
-        splitter = QSplitter()
-        splitter.addWidget(left_panel)
-        splitter.addWidget(right_panel)
-        splitter.setSizes([200, 700])
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        body.addWidget(sidebar)
+        body.addWidget(card, 1)
 
+        # Footer: output folder and export
+        save_to = QLabel("Save to")
+        save_to.setObjectName("muted")
         self.output_label = QLabel()
+        self.output_label.setObjectName("chip")
         change_btn = QPushButton("Change…")
+        change_btn.setObjectName("ghost")
         change_btn.clicked.connect(self._choose_output)
         show_btn = QPushButton("Show")
+        show_btn.setObjectName("ghost")
         show_btn.clicked.connect(self._show_output)
-        self.export_btn = QPushButton("Export")
-        self.export_btn.setDefault(True)
-        self.export_btn.clicked.connect(self._export_current)
+        self.toast = QLabel()
+        self.toast.setObjectName("toast")
+        self._toast_timer = QTimer(self)
+        self._toast_timer.setSingleShot(True)
+        self._toast_timer.timeout.connect(self.toast.clear)
         self.export_all_btn = QPushButton("Export all")
         self.export_all_btn.clicked.connect(self._export_all)
-        bottom = QHBoxLayout()
-        bottom.addWidget(QLabel("Output:"))
-        bottom.addWidget(self.output_label, 1)
-        for w in (change_btn, show_btn, self.export_btn, self.export_all_btn):
-            bottom.addWidget(w)
+        self.export_btn = QPushButton("Export WAV")
+        self.export_btn.setObjectName("primary")
+        self.export_btn.setDefault(True)
+        self.export_btn.clicked.connect(self._export_current)
+        footer = QHBoxLayout()
+        footer.setSpacing(8)
+        footer.addWidget(save_to)
+        footer.addWidget(self.output_label)
+        footer.addWidget(change_btn)
+        footer.addWidget(show_btn)
+        footer.addStretch()
+        footer.addWidget(self.toast)
+        footer.addSpacing(8)
+        footer.addWidget(self.export_all_btn)
+        footer.addWidget(self.export_btn)
 
         root = QVBoxLayout()
-        root.addWidget(splitter, 1)
-        root.addLayout(bottom)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(14)
+        root.addLayout(header)
+        root.addLayout(body, 1)
+        root.addLayout(footer)
         central = QWidget()
         central.setLayout(root)
         self.setCentralWidget(central)
@@ -161,7 +229,9 @@ class MainWindow(QMainWindow):
                 errors.append(f"{path.name}: {e}")
                 continue
             self.takes.append(take)
-            self.list.addItem(QListWidgetItem(take.name))
+            item = QListWidgetItem(take.name)
+            self.list.addItem(item)
+            self._update_item(item, take)
         if len(self.takes) > first_new:
             self.list.setCurrentRow(first_new)
         if errors:
@@ -207,7 +277,7 @@ class MainWindow(QMainWindow):
         if take is None:
             self.name_edit.clear()
             self.wave.clear()
-            self.length_label.clear()
+            self.meter.set_seconds(None)
             self.cut_btn.setEnabled(False)
             return
         self.name_edit.setText(take.name)
@@ -218,13 +288,8 @@ class MainWindow(QMainWindow):
         take = self.current()
         if take is None:
             return
-        limit = f"{take.seconds:.2f} s / {audio.MAX_SECONDS:.2f} s"
-        if take.fits:
-            self.length_label.setText(f"{limit}  ✓ fits")
-            self.length_label.setStyleSheet("color: #2a9d55;")
-        else:
-            self.length_label.setText(f"{limit}  ✗ too long")
-            self.length_label.setStyleSheet("color: #d03b3b; font-weight: bold;")
+        self.meter.set_seconds(take.seconds)
+        self._update_item(self.list.currentItem(), take)
         self.cut_btn.setEnabled(not take.fits)
         self.export_btn.setEnabled(take.fits)
 
@@ -275,15 +340,30 @@ class MainWindow(QMainWindow):
         except RuntimeError as e:
             QMessageBox.warning(self, "Can't play", str(e))
             return
-        self.play_btn.setText("■ Stop")
+        self.play_btn.setIcon(stop_icon())
 
     # Export
 
     def output_dir(self) -> Path:
         return Path(self.settings.value("output_dir", str(DEFAULT_OUTPUT)))
 
+    def _update_item(self, item: QListWidgetItem | None, take: Take) -> None:
+        if item is not None:
+            item.setData(ROLE_SECONDS, take.seconds)
+            item.setData(ROLE_FITS, take.fits)
+
+    def _show_toast(self, text: str) -> None:
+        self.toast.setText(text)
+        self._toast_timer.start(5000)
+
     def _update_output_label(self) -> None:
-        self.output_label.setText(str(self.output_dir()))
+        folder = self.output_dir()
+        try:
+            shown = "~/" + folder.relative_to(Path.home()).as_posix()
+        except ValueError:
+            shown = str(folder)
+        self.output_label.setText(shown)
+        self.output_label.setToolTip(str(folder))
 
     def _choose_output(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Output folder", str(self.output_dir()))
@@ -319,7 +399,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Export failed", str(e))
             return
         if dest is not None:
-            self.statusBar().showMessage(f"Exported {dest}", 5000)
+            self._show_toast(f"✓  Saved {dest.name}")
 
     def _export_all(self) -> None:
         done, skipped = 0, []
@@ -333,7 +413,6 @@ class MainWindow(QMainWindow):
                     done += 1
             except (OSError, ValueError) as e:
                 skipped.append(f"{take.name}: {e}")
-        self.statusBar().showMessage(f"Exported {done} of {len(self.takes)} to "
-                                     f"{self.output_dir()}", 5000)
+        self._show_toast(f"✓  Saved {done} of {len(self.takes)}")
         if skipped:
             QMessageBox.warning(self, "Some samples were not exported", "\n".join(skipped))

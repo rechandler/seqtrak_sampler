@@ -5,13 +5,16 @@ from __future__ import annotations
 from array import array
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from .. import audio
+from . import theme
 
 PEAK_BUCKETS = 4096
-HANDLE_GRAB_PX = 8
+HANDLE_GRAB_PX = 10
+RULER_H = 22
+PAD = 12
 
 
 def _peaks(frames: array, buckets: int) -> tuple[list[int], list[int]]:
@@ -30,7 +33,7 @@ class WaveformView(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(400, 180)
+        self.setMinimumSize(400, 200)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMouseTracking(True)
         self._channels: list[tuple[list[int], list[int]]] = []
@@ -41,6 +44,7 @@ class WaveformView(QWidget):
         self._end = 0
         self._playhead: int | None = None
         self._dragging: str | None = None
+        self._hover: str | None = None
 
     def set_sound(self, left: array, right: array, rate: int, start: int, end: int) -> None:
         self._channels = [_peaks(left, PEAK_BUCKETS), _peaks(right, PEAK_BUCKETS)]
@@ -65,67 +69,167 @@ class WaveformView(QWidget):
         self._playhead = frame
         self.update()
 
-    # Coordinate helpers
+    # Coordinate helpers: the waveform is drawn inside a padded area.
+
+    def _area(self) -> QRectF:
+        return QRectF(PAD, PAD, self.width() - 2 * PAD, self.height() - 2 * PAD - RULER_H)
 
     def _x(self, frame: int) -> float:
-        return frame / max(1, self._frames) * self.width()
+        a = self._area()
+        return a.left() + frame / max(1, self._frames) * a.width()
 
     def _frame(self, x: float) -> int:
-        return max(0, min(self._frames, round(x / max(1, self.width()) * self._frames)))
+        a = self._area()
+        frac = (x - a.left()) / max(1.0, a.width())
+        return max(0, min(self._frames, round(frac * self._frames)))
 
     # Painting
 
+    def _channel_path(self, mins: list[int], maxs: list[int], lane: QRectF) -> QPainterPath:
+        mid = lane.center().y()
+        scale = (lane.height() / 2 - 2) / self._peak
+        cols = max(1, int(lane.width()))
+        buckets = len(mins)
+        top, bottom = [], []
+        for c in range(cols):
+            b0 = c * buckets // cols
+            b1 = max(b0 + 1, (c + 1) * buckets // cols)
+            hi = max(maxs[b0:b1])
+            lo = min(mins[b0:b1])
+            x = lane.left() + c + 0.5
+            top.append(QPointF(x, mid - max(hi, 0) * scale - 0.5))
+            bottom.append(QPointF(x, mid - min(lo, 0) * scale + 0.5))
+        path = QPainterPath()
+        path.addPolygon(QPolygonF(top + bottom[::-1]))
+        path.closeSubpath()
+        return path
+
     def paintEvent(self, event):
         p = QPainter(self)
-        pal = self.palette()
-        p.fillRect(self.rect(), pal.base())
+        p.setRenderHint(QPainter.Antialiasing)
+        bg = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(QColor(theme.BORDER), 1))
+        p.setBrush(QColor(theme.BG))
+        p.drawRoundedRect(bg, 12, 12)
+
         if not self._channels:
-            p.setPen(pal.placeholderText().color())
-            p.drawText(self.rect(), Qt.AlignCenter, "Drop .Y3S files here")
+            self._paint_empty(p, bg)
             return
 
-        w, h = self.width(), self.height()
-        wave_color = pal.highlight().color()
-        lane_h = h / len(self._channels)
-        for lane, (mins, maxs) in enumerate(self._channels):
-            top = lane * lane_h
-            mid = top + lane_h / 2
-            scale = (lane_h / 2 - 2) / self._peak
-            p.setPen(QPen(pal.mid().color(), 1))
-            p.drawLine(QPointF(0, mid), QPointF(w, mid))
-            p.setPen(QPen(wave_color, 1))
-            buckets = len(mins)
-            for x in range(w):
-                b0 = x * buckets // w
-                b1 = max(b0 + 1, (x + 1) * buckets // w)
-                lo, hi = min(mins[b0:b1]), max(maxs[b0:b1])
-                p.drawLine(QPointF(x + 0.5, mid - hi * scale), QPointF(x + 0.5, mid - lo * scale))
-            p.setPen(pal.placeholderText().color())
-            p.drawText(QRectF(4, top + 2, 20, 16), Qt.AlignLeft, "LR"[lane])
+        area = self._area()
+        lane_h = area.height() / len(self._channels)
+        lanes = [QRectF(area.left(), area.top() + i * lane_h, area.width(), lane_h)
+                 for i in range(len(self._channels))]
+        paths = [self._channel_path(mins, maxs, lane)
+                 for (mins, maxs), lane in zip(self._channels, lanes)]
+
+        p.setPen(QPen(QColor(theme.SURFACE_2), 1))
+        for lane in lanes:
+            p.drawLine(QPointF(lane.left(), lane.center().y()),
+                       QPointF(lane.right(), lane.center().y()))
+        if len(lanes) == 2:
+            p.setPen(QPen(QColor(theme.BORDER), 1, Qt.DashLine))
+            p.drawLine(QPointF(area.left(), lanes[1].top()), QPointF(area.right(), lanes[1].top()))
 
         sx, ex = self._x(self._start), self._x(self._end)
-        shade = QColor(pal.window().color())
-        shade.setAlpha(170)
-        p.fillRect(QRectF(0, 0, sx, h), shade)
-        p.fillRect(QRectF(ex, 0, w - ex, h), shade)
+        selection = QRectF(sx, area.top() - PAD + 2, ex - sx, area.height() + PAD - 2)
+
+        # Outside the selection: dim. Inside: bright.
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(theme.SURFACE_3))
+        for path in paths:
+            p.drawPath(path)
+        tint = QColor(theme.ACCENT)
+        tint.setAlpha(10)
+        p.fillRect(selection, tint)
+        p.save()
+        p.setClipRect(selection)
+        p.setBrush(QColor(theme.TEXT))
+        for path in paths:
+            p.drawPath(path)
+        p.restore()
 
         limit_end = self._start + int(audio.MAX_SECONDS * self._rate)
         if self._end > limit_end:
-            over = QColor(220, 50, 50, 70)
-            p.fillRect(QRectF(self._x(limit_end), 0, ex - self._x(limit_end), h), over)
+            lx = self._x(limit_end)
+            over = QRectF(lx, selection.top(), ex - lx, selection.height())
+            red = QColor(theme.DANGER)
+            red.setAlpha(45)
+            p.fillRect(over, red)
+            p.save()
+            p.setClipRect(over)
+            p.setBrush(QColor(theme.DANGER))
+            for path in paths:
+                p.drawPath(path)
+            p.restore()
+            p.setPen(QPen(QColor(theme.DANGER), 1, Qt.DashLine))
+            p.drawLine(QPointF(lx, selection.top()), QPointF(lx, selection.bottom()))
 
-        handle = QColor(255, 170, 0)
-        for x, direction in ((sx, 1), (ex, -1)):
-            p.setPen(QPen(handle, 2))
-            p.drawLine(QPointF(x, 0), QPointF(x, h))
-            p.setBrush(handle)
-            p.drawPolygon(QPolygonF([QPointF(x, 0), QPointF(x + 9 * direction, 0),
-                                     QPointF(x, 12)]))
+        small = QFont(self.font())
+        small.setPixelSize(10)
+        small.setWeight(QFont.DemiBold)
+        p.setFont(small)
+        p.setPen(QColor(theme.FAINT))
+        for name, lane in zip("LR", lanes):
+            p.drawText(QRectF(area.left() + 4, lane.top() + 2, 20, 14), Qt.AlignLeft, name)
+
+        self._paint_ruler(p, area)
+        for which, x in (("start", sx), ("end", ex)):
+            self._paint_handle(p, x, selection, which)
 
         if self._playhead is not None:
-            p.setPen(QPen(pal.text().color(), 1))
             px = self._x(self._playhead)
-            p.drawLine(QPointF(px, 0), QPointF(px, h))
+            p.setPen(QPen(QColor(theme.ACCENT), 2))
+            p.drawLine(QPointF(px, selection.top()), QPointF(px, selection.bottom()))
+
+    def _paint_empty(self, p: QPainter, bg: QRectF) -> None:
+        box = bg.adjusted(18, 18, -18, -18)
+        p.setPen(QPen(QColor(theme.SURFACE_3), 1.5, Qt.DashLine))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(box, 10, 10)
+        title = QFont(self.font())
+        title.setPixelSize(15)
+        title.setWeight(QFont.DemiBold)
+        p.setFont(title)
+        p.setPen(QColor(theme.TEXT))
+        p.drawText(box.adjusted(0, -12, 0, -12), Qt.AlignCenter, "Drop .Y3S files here")
+        sub = QFont(self.font())
+        sub.setPixelSize(12)
+        p.setFont(sub)
+        p.setPen(QColor(theme.MUTED))
+        p.drawText(box.adjusted(0, 16, 0, 16), Qt.AlignCenter,
+                   "Export a sound from the SEQTRAK app, then drag it in")
+
+    def _paint_ruler(self, p: QPainter, area: QRectF) -> None:
+        seconds = self._frames / self._rate
+        step = next(s for s in (0.5, 1, 2, 5, 10, 30) if area.width() / max(seconds / s, 1) >= 60)
+        font = QFont(self.font())
+        font.setPixelSize(10)
+        p.setFont(font)
+        y = area.bottom() + 6
+        t = 0.0
+        while t <= seconds:
+            x = self._x(int(t * self._rate))
+            p.setPen(QPen(QColor(theme.BORDER), 1))
+            p.drawLine(QPointF(x, area.bottom() + 2), QPointF(x, area.bottom() + 6))
+            p.setPen(QColor(theme.FAINT))
+            p.drawText(QRectF(x - 30, y, 60, 14), Qt.AlignCenter, f"{t:g}s")
+            t += step
+
+    def _paint_handle(self, p: QPainter, x: float, selection: QRectF, which: str) -> None:
+        active = which in (self._hover, self._dragging)
+        color = QColor(theme.ACCENT_HOVER if active else theme.ACCENT)
+        p.setPen(QPen(color, 2))
+        p.drawLine(QPointF(x, selection.top()), QPointF(x, selection.bottom()))
+        tab_w, tab_h = 12, 22
+        tab = QRectF(x - tab_w / 2, selection.center().y() - tab_h / 2, tab_w, tab_h)
+        p.setPen(Qt.NoPen)
+        p.setBrush(color)
+        p.drawRoundedRect(tab, 4, 4)
+        p.setPen(QPen(QColor(0, 0, 0, 110), 1))
+        for dy in (-4, 0, 4):
+            cy = tab.center().y() + dy
+            p.drawLine(QPointF(tab.left() + 3.5, cy), QPointF(tab.right() - 3.5, cy))
 
     # Handle dragging
 
@@ -142,8 +246,11 @@ class WaveformView(QWidget):
     def mouseMoveEvent(self, event):
         x = event.position().x()
         if self._dragging is None:
-            grab = self._channels and self._handle_at(x)
-            self.setCursor(Qt.SizeHorCursor if grab else Qt.ArrowCursor)
+            hover = self._handle_at(x) if self._channels else None
+            if hover != self._hover:
+                self._hover = hover
+                self.setCursor(Qt.SizeHorCursor if hover else Qt.ArrowCursor)
+                self.update()
             return
         frame = self._frame(x)
         if self._dragging == "start":
@@ -155,3 +262,9 @@ class WaveformView(QWidget):
 
     def mouseReleaseEvent(self, event):
         self._dragging = None
+        self.update()
+
+    def leaveEvent(self, event):
+        if self._hover and self._dragging is None:
+            self._hover = None
+            self.update()
