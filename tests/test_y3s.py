@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import struct
 import tempfile
 import unittest
@@ -115,6 +117,25 @@ class ConvertTests(unittest.TestCase):
         left, right = audio.normalize(array("h", [100, -200]), array("h", [50, 0]), 0.0)
         self.assertEqual(list(left), [16384, -32767])
         self.assertEqual(list(right), [8192, 0])
+
+    def test_render_region_fades_cut_edges(self):
+        left = array("h", [1000] * 2000)
+        left_out, right_out = audio.render_region(left, array("h", left), 500, 1500, 44100)
+        self.assertEqual(len(left_out), 1000)
+        self.assertEqual(left_out[0], 0)    # faded in
+        self.assertEqual(left_out[-1], 0)   # faded out
+        self.assertEqual(left_out[500], 1000)
+        self.assertEqual(left[500], 1000)   # source untouched
+
+    def test_render_region_leaves_silent_edges(self):
+        left = array("h", [0, 1000, 1000, 0])
+        out, _ = audio.render_region(left, array("h", left), 0, 4, 44100)
+        self.assertEqual(list(out), [0, 1000, 1000, 0])
+
+    def test_render_region_enforces_limit(self):
+        n = 44100 * 16 + 1
+        with self.assertRaises(audio.TooLongError):
+            audio.render_region(array("h", bytes(2 * n)), array("h", bytes(2 * n)), 0, n, 44100)
 
     def test_refuses_to_overwrite(self):
         src = self.tmp / "s.y3s"

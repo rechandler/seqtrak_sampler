@@ -1,0 +1,40 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: PYTHONPATH=src python -m unittest discover -s tests -v
+
+  app:
+    needs: test
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyinstaller ".[gui]"
+      - run: pyinstaller --noconfirm --windowed --name "SEQTRAK Sampler" packaging/launch.py
+      - name: Zip (macOS)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent "dist/SEQTRAK Sampler.app" "SEQTRAK-Sampler-macOS.zip"
+      - name: Zip (Windows)
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path "dist/SEQTRAK Sampler" -DestinationPath "SEQTRAK-Sampler-Windows.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SEQTRAK-Sampler-${{ runner.os }}
+          path: SEQTRAK-Sampler-*.zip

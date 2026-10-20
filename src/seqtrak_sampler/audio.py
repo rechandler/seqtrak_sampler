@@ -67,6 +67,56 @@ def fade_out(left: array, right: array, frames: int) -> None:
         right[n - frames + i] = int(right[n - frames + i] * g)
 
 
+def fade_in(left: array, right: array, frames: int) -> None:
+    """Apply a linear fade over the first `frames` frames, in place."""
+    frames = min(frames, len(left))
+    for i in range(frames):
+        g = i / frames
+        left[i] = int(left[i] * g)
+        right[i] = int(right[i] * g)
+
+
+def render_region(
+    left: array,
+    right: array,
+    start: int,
+    end: int,
+    sample_rate: int,
+    normalize_db: float | None = None,
+    threshold: int = 0,
+    fade_ms: float = 10.0,
+) -> tuple[array, array]:
+    """Cut [start, end) out of a sound, ready to export.
+
+    An edge that cuts through audio louder than threshold gets a short fade so
+    it doesn't click. Raises TooLongError if the region exceeds MAX_SECONDS.
+    """
+    if end - start > int(MAX_SECONDS * sample_rate):
+        raise TooLongError(
+            f"selection is {(end - start) / sample_rate:.2f} s; the SEQTRAK limit is "
+            f"{MAX_SECONDS:g} s"
+        )
+    left, right = left[start:end], right[start:end]
+    fade = math.ceil(sample_rate * fade_ms / 1000)
+    if left and (abs(left[0]) > threshold or abs(right[0]) > threshold):
+        fade_in(left, right, fade // 4)
+    if left and (abs(left[-1]) > threshold or abs(right[-1]) > threshold):
+        fade_out(left, right, fade)
+    if normalize_db is not None:
+        left, right = normalize(left, right, normalize_db)
+    return left, right
+
+
+def to_pcm_bytes(left: array, right: array) -> bytes:
+    """Interleave two channels into 16-bit little-endian stereo PCM."""
+    interleaved = array("h", bytes(4 * len(left)))
+    interleaved[0::2] = left
+    interleaved[1::2] = right
+    if sys.byteorder == "big":
+        interleaved.byteswap()
+    return interleaved.tobytes()
+
+
 def enforce_max_length(
     left: array, right: array, sample_rate: int, truncate: bool, fade_ms: float = 10.0
 ) -> tuple[array, array]:
@@ -84,13 +134,8 @@ def enforce_max_length(
 
 
 def write_wav(path, left: array, right: array, sample_rate: int) -> None:
-    interleaved = array("h", bytes(4 * len(left)))
-    interleaved[0::2] = left
-    interleaved[1::2] = right
-    if sys.byteorder == "big":
-        interleaved.byteswap()
     with wave.open(str(path), "wb") as w:
         w.setnchannels(2)
         w.setsampwidth(2)
         w.setframerate(sample_rate)
-        w.writeframes(interleaved.tobytes())
+        w.writeframes(to_pcm_bytes(left, right))
