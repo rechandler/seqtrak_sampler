@@ -116,6 +116,27 @@ QPushButton#primary:disabled {{
     background: {SURFACE_2};
     color: {FAINT};
 }}
+QPushButton#watching {{
+    background: rgba(62, 207, 142, 0.10);
+    border: 1px solid rgba(62, 207, 142, 0.45);
+    color: {OK};
+}}
+QPushButton#watching:hover {{
+    background: rgba(62, 207, 142, 0.18);
+}}
+QMenu {{
+    background: {SURFACE_2};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    padding: 4px;
+}}
+QMenu::item {{
+    padding: 6px 18px;
+    border-radius: 6px;
+}}
+QMenu::item:selected {{
+    background: {SURFACE_3};
+}}
 QPushButton#ghost {{
     background: transparent;
     border: 1px solid transparent;

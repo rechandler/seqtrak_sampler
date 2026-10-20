@@ -22,6 +22,16 @@ in [FORMAT.md](FORMAT.md).
    (default `~/Music/SEQTRAK Samples`); **Show** opens it.
 5. Import the WAV into a synth track in the SEQTRAK app.
 
+### Faster round trips
+
+- **Watch folder:** click **Watch folder…** and pick the folder you export `.Y3S` files
+  to. New exports load on their own within a second, and re-exporting a sound with the
+  same name reloads it (keeping the name you gave it).
+- **Drag out:** drag a sample from the list, or the **Drag WAV** button, straight onto
+  the SEQTRAK app's import. No file dialogs.
+- **Auto-save:** turn it on and every sample is written to the output folder as soon as
+  it loads or you edit it. Renaming a sample renames its file.
+
 The length meter shows the selection against the SEQTRAK's 16-second limit. Anything
 past the limit is shaded red and Export is disabled until you drag the end handle in
 or press **Cut to 16 s**. Edges that cut through sound get a short fade so they don't

@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap, QPolygonF
-from PySide6.QtWidgets import QCheckBox, QStyle, QStyledItemDelegate, QWidget
+from pathlib import Path
+from typing import Callable
+
+from PySide6.QtCore import QMimeData, QPointF, QRectF, QSize, Qt, QUrl
+from PySide6.QtGui import QColor, QDrag, QFont, QIcon, QPainter, QPixmap, QPolygonF
+from PySide6.QtWidgets import (
+    QAbstractItemView, QApplication, QCheckBox, QListWidget, QPushButton, QStyle,
+    QStyledItemDelegate, QWidget,
+)
 
 from . import theme
 
@@ -44,7 +50,10 @@ class Toggle(QCheckBox):
 
     def sizeHint(self) -> QSize:
         text_w = self.fontMetrics().horizontalAdvance(self.text())
-        return QSize(self.TRACK_W + 10 + text_w, 24)
+        return QSize(self.TRACK_W + 10 + text_w + 2, 24)
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
 
     def hitButton(self, pos) -> bool:
         return self.rect().contains(pos)
@@ -160,3 +169,58 @@ class TakeDelegate(QStyledItemDelegate):
         p.setBrush(QColor(theme.OK if fits else theme.DANGER))
         p.drawEllipse(QPointF(r.right() - 14, r.center().y()), 3.5, 3.5)
         p.restore()
+
+
+def start_file_drag(source: QWidget, path: Path | None) -> None:
+    """Drag a file out of the app, e.g. into the SEQTRAK app's import."""
+    if path is None:
+        return
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(path))])
+    drag = QDrag(source)
+    drag.setMimeData(mime)
+    drag.exec(Qt.CopyAction)
+
+
+class DragList(QListWidget):
+    """A list whose rows can be dragged out as files. `file_for_row` makes the file."""
+
+    def __init__(self, file_for_row: Callable[[int], Path | None], parent=None):
+        super().__init__(parent)
+        self._file_for_row = file_for_row
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragOnly)
+
+    def startDrag(self, supported_actions):
+        row = self.currentRow()
+        if row >= 0:
+            start_file_drag(self, self._file_for_row(row))
+
+
+class DragButton(QPushButton):
+    """A button you drag rather than click; dragging produces `make_file()`."""
+
+    def __init__(self, text: str, make_file: Callable[[], Path | None], parent=None):
+        super().__init__(text, parent)
+        self._make_file = make_file
+        self._press = None
+        self.setCursor(Qt.OpenHandCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press = event.position()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._press is not None and (
+            (event.position() - self._press).manhattanLength() >= QApplication.startDragDistance()
+        ):
+            self._press = None
+            self.setDown(False)
+            start_file_drag(self, self._make_file())
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._press = None
+        super().mouseReleaseEvent(event)
