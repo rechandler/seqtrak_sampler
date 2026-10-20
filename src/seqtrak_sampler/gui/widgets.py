@@ -38,9 +38,9 @@ def play_icon() -> QIcon:
         [QPointF(s * 0.3, s * 0.18), QPointF(s * 0.84, s * 0.5), QPointF(s * 0.3, s * 0.82)])))
 
 
-def stop_icon() -> QIcon:
+def stop_icon(color: str = "#1a0d03") -> QIcon:
     return _icon(lambda p, s: p.drawRoundedRect(QRectF(s * 0.24, s * 0.24, s * 0.52, s * 0.52),
-                                                2, 2))
+                                                2, 2), color=color)
 
 
 class Toggle(QCheckBox):
@@ -224,3 +224,83 @@ class DragButton(QPushButton):
     def mouseReleaseEvent(self, event):
         self._press = None
         super().mouseReleaseEvent(event)
+
+
+def record_icon(color: str = theme.DANGER) -> QIcon:
+    return _icon(lambda p, s: p.drawEllipse(QRectF(s * 0.22, s * 0.22, s * 0.56, s * 0.56)),
+                 color=color)
+
+
+# Item data roles used by PadDelegate.
+ROLE_PAD_STATE = Qt.UserRole + 2   # "empty", "new", "in_app"
+ROLE_PAD_SECONDS = Qt.UserRole + 3
+
+PAD_COLORS = {"empty": theme.FAINT, "new": theme.ACCENT, "in_app": theme.OK}
+PAD_LABELS = {"empty": "empty", "new": "not in app", "in_app": "in app"}
+
+
+class PadDelegate(QStyledItemDelegate):
+    """Compact row for one SEQTRAK sampler pad: number, name, length, status."""
+
+    def sizeHint(self, option, index) -> QSize:
+        return QSize(option.rect.width(), 30)
+
+    def paint(self, p: QPainter, option, index):
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(option.rect).adjusted(2, 1, -2, -1)
+        state = index.data(ROLE_PAD_STATE) or "empty"
+        if option.state & (QStyle.State_Selected | QStyle.State_MouseOver) and state != "empty":
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(theme.SURFACE_2))
+            p.drawRoundedRect(r, 8, 8)
+
+        small = QFont(option.font)
+        small.setPixelSize(11)
+        small.setWeight(QFont.DemiBold)
+        p.setFont(small)
+        p.setPen(QColor(theme.FAINT))
+        p.drawText(QRectF(r.left() + 8, r.top(), 14, r.height()), Qt.AlignVCenter,
+                   str(index.row() + 1))
+
+        name_font = QFont(option.font)
+        name_font.setPixelSize(12)
+        p.setFont(name_font)
+        p.setPen(QColor(theme.FAINT if state == "empty" else theme.TEXT))
+        name_rect = QRectF(r.left() + 26, r.top(), r.width() - 100, r.height())
+        name = index.data(Qt.DisplayRole) or "—"
+        p.drawText(name_rect, Qt.AlignVCenter | Qt.AlignLeft,
+                   p.fontMetrics().elidedText(name, Qt.ElideRight, int(name_rect.width())))
+
+        if state != "empty":
+            p.setPen(QColor(theme.MUTED))
+            p.drawText(QRectF(r.right() - 72, r.top(), 46, r.height()),
+                       Qt.AlignVCenter | Qt.AlignRight, f"{index.data(ROLE_PAD_SECONDS):.1f} s")
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(PAD_COLORS[state]))
+        p.drawEllipse(QPointF(r.right() - 12, r.center().y()), 3.5, 3.5)
+        p.restore()
+
+
+class LevelBar(QWidget):
+    """A thin input level meter."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._level = 0.0
+        self.setFixedHeight(4)
+
+    def set_level(self, level: float) -> None:
+        self._level = level
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(theme.SURFACE_3))
+        p.drawRoundedRect(QRectF(self.rect()), 2, 2)
+        if self._level > 0:
+            color = theme.DANGER if self._level > 0.98 else theme.OK
+            p.setBrush(QColor(color))
+            p.drawRoundedRect(QRectF(0, 0, self.width() * self._level, self.height()), 2, 2)
