@@ -90,7 +90,7 @@ reads `00 Resampl 00 ing-5-1`. From 0x65: u32 LE values `511567` (last frame),
 
 ## Over MIDI
 
-The SEQTRAK's documented SysEx (Data List pp. 115-122, 152-154) exposes a sampler pad's
+The SEQTRAK's documented SysEx ([SEQTRAK Data List](https://data.yamaha.com/files/download/other_assets/5/2226075/SEQTRAK_data_list_En_D0.pdf), pp. 115-122, 152-154) exposes a sampler pad's
 name, loop on/off, loop length and start/end points through bulk dumps of the
 *SAMPLER Sample General* block at `50 eA 00` (e = pad 0-6, A = sampler part 10). There is
 no block for the audio itself. The end point always has bits 3-0 set, and an end point of

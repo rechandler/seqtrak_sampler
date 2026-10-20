@@ -2,7 +2,8 @@
 
 Only documented messages are used: Identity Request/Reply, Bulk Request,
 Bulk Dump (received) and Parameter Change (sent). Page numbers refer to the
-data list (SEQTRAK_data_list_En_D0.pdf).
+data list:
+https://data.yamaha.com/files/download/other_assets/5/2226075/SEQTRAK_data_list_En_D0.pdf
 
 Nothing here can move audio: sampler bulk dumps carry a pad's name, loop and
 start/end points, but not the sample data itself (pp. 121, 152-154).

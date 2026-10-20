@@ -49,8 +49,8 @@ comes alive:
   (and new name) back to that pad on the SEQTRAK. Only the pad's settings change; the
   recorded audio on the device stays as it is.
 
-Reading pads and sending trims uses MIDI System Exclusive messages from Yamaha's SEQTRAK
-Data List. Two things to know:
+Reading pads and sending trims uses MIDI System Exclusive messages from Yamaha's
+[SEQTRAK Data List](https://data.yamaha.com/files/download/other_assets/5/2226075/SEQTRAK_data_list_En_D0.pdf). Two things to know:
 
 - The SEQTRAK answers SysEx only when its *USB MIDI Transmit System Exclusive* setting
   is on, and it's off by default. If the panel says SysEx is off, click **Enable**.
