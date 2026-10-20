@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import re
+import tempfile
+import time
 from array import array
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,32 +11,53 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget,
+    QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+    QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
-from .. import audio
+from .. import audio, sysex
+from ..files import FolderScanner, safe_filename, unique_path
 from ..y3s import read_y3s
+from . import device as dev
 from . import theme
+from .device import Device
 from .player import Player
+from .recorder import Recorder
 from .waveform import WaveformView
-from .widgets import ROLE_FITS, ROLE_SECONDS, LengthMeter, TakeDelegate, Toggle, play_icon, stop_icon
+from .widgets import (
+    ROLE_FITS, ROLE_PAD_SECONDS, ROLE_PAD_STATE, ROLE_SECONDS, DragButton, DragList,
+    LengthMeter, LevelBar, PadDelegate, TakeDelegate, Toggle, play_icon, record_icon,
+    stop_icon,
+)
 
 THRESHOLD = audio.dbfs_to_amplitude(-60.0)
 PAD_MS = 5.0
 NORMALIZE_DB = -1.0
 DEFAULT_OUTPUT = Path.home() / "Music" / "SEQTRAK Samples"
+WATCH_INTERVAL_MS = 1000
+AUTO_SAVE_DELAY_MS = 700
+DRAG_DIR = Path(tempfile.gettempdir()) / "seqtrak-sampler-drag"
 
 
 @dataclass
 class Take:
-    path: Path
+    path: Path | None  # the .Y3S it came from; None for recordings
     name: str
     left: array
     right: array
     rate: int
     start: int
     end: int
+    saved_path: Path | None = None  # the WAV we last wrote for this take
+    device_name: str = ""  # the sample's name on the SEQTRAK, if it came from a pad
+
+    @property
+    def label(self) -> str:
+        return self.name or (self.path.stem if self.path else "Recording")
+
+    @property
+    def last_frame(self) -> int:
+        return len(self.left) - 1
 
     @property
     def seconds(self) -> float:
@@ -54,14 +76,10 @@ class Take:
 def load_take(path: Path) -> Take:
     sound = read_y3s(path)
     left, right = audio.to_stereo([kb.frames for kb in sound.keybanks])
-    take = Take(path, path.stem, left, right, sound.sample_rate, 0, len(left))
+    take = Take(path, path.stem, left, right, sound.sample_rate, 0, len(left),
+                device_name=sound.name)
     take.auto_trim()
     return take
-
-
-def safe_filename(name: str) -> str:
-    cleaned = re.sub(r"[^\w\- .]", "_", name).strip(" .")
-    return cleaned or "sample"
 
 
 class MainWindow(QMainWindow):
@@ -69,11 +87,21 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("SEQTRAK Sampler")
         self.setAcceptDrops(True)
-        self.resize(1040, 560)
-        self.setMinimumSize(820, 460)
+        self.resize(1140, 700)
+        self.setMinimumSize(1000, 560)
         self.settings = QSettings("seqtrak_sampler", "SEQTRAK Sampler")
         self.takes: list[Take] = []
         self.player = Player(self)
+        self._scanner: FolderScanner | None = None
+        self._watch_timer = QTimer(self)
+        self._watch_timer.setInterval(WATCH_INTERVAL_MS)
+        self._watch_timer.timeout.connect(self._poll_watch_folder)
+        self._dirty: list[Take] = []
+        self._auto_save_timer = QTimer(self)
+        self._auto_save_timer.setSingleShot(True)
+        self._auto_save_timer.timeout.connect(self._flush_auto_save)
+        self.device = Device(self)
+        self.recorder = Recorder(self)
 
         # Header
         logo = QLabel()
@@ -85,6 +113,8 @@ class MainWindow(QMainWindow):
         subtitle.setObjectName("appSubtitle")
         add_btn = QPushButton("+  Add files")
         add_btn.clicked.connect(self._add_dialog)
+        self.watch_btn = QPushButton()
+        self.watch_btn.clicked.connect(self._watch_clicked)
         header = QHBoxLayout()
         header.setSpacing(10)
         header.addWidget(logo)
@@ -92,26 +122,80 @@ class MainWindow(QMainWindow):
         header.addSpacing(6)
         header.addWidget(subtitle)
         header.addStretch()
+        header.addWidget(self.watch_btn)
         header.addWidget(add_btn)
 
         # Sidebar: the list of loaded sounds
         samples_title = QLabel("SAMPLES")
         samples_title.setObjectName("sectionTitle")
-        self.list = QListWidget()
+        self.list = DragList(lambda row: self._drag_file(self.takes[row]))
+        self.list.setToolTip("Drag a sample into the SEQTRAK app to import it")
         self.list.setItemDelegate(TakeDelegate(self.list))
         self.list.setMouseTracking(True)
         self.list.currentRowChanged.connect(self._show_take)
         self.remove_btn = QPushButton("Remove")
         self.remove_btn.setObjectName("ghost")
         self.remove_btn.clicked.connect(self._remove_current)
+        # SEQTRAK panel: connection, recording, sampler pads
+        device_title = QLabel("SEQTRAK")
+        device_title.setObjectName("sectionTitle")
+        self.device_dot = QLabel()
+        self.device_dot.setFixedSize(8, 8)
+        self.device_label = QLabel()
+        self.device_label.setObjectName("muted")
+        self.device_label.setWordWrap(True)
+        self.enable_btn = QPushButton("Enable")
+        self.enable_btn.setToolTip("Turn on the SEQTRAK's USB MIDI SysEx transmit setting "
+                                   "so this app can read its sampler pads")
+        self.enable_btn.clicked.connect(self.device.enable_sysex)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        status_row.addWidget(self.device_dot)
+        status_row.addWidget(self.device_label, 1)
+        status_row.addWidget(self.enable_btn)
+
+        self.rec_btn = QPushButton("  Record")
+        self.rec_btn.setIcon(record_icon())
+        self.rec_btn.setToolTip("Record the SEQTRAK's USB audio")
+        self.rec_btn.clicked.connect(self._toggle_record)
+        self.follow_box = Toggle("Rec on Play")
+        self.follow_box.setToolTip("Start recording when you press Play on the SEQTRAK, "
+                                   "and stop when you press Stop")
+        self.follow_box.toggled.connect(self._follow_toggled)
+        rec_row = QHBoxLayout()
+        rec_row.addWidget(self.rec_btn)
+        rec_row.addStretch()
+        rec_row.addWidget(self.follow_box)
+        self.rec_status = QLabel()
+        self.rec_status.setObjectName("muted")
+        self.level_bar = LevelBar()
+
+        self.pads_list = QListWidget()
+        self.pads_list.setItemDelegate(PadDelegate(self.pads_list))
+        self.pads_list.setMouseTracking(True)
+        self.pads_list.setFixedHeight(30 * sysex.SAMPLER_PADS + 4)
+        self.pads_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.pads_list.itemClicked.connect(self._pad_clicked)
+        for _ in range(sysex.SAMPLER_PADS):
+            self.pads_list.addItem(QListWidgetItem())
+        self._pads: dict[int, sysex.SamplerPad] = {}
+
         sidebar_col = QVBoxLayout()
         sidebar_col.setContentsMargins(0, 4, 0, 0)
+        sidebar_col.setSpacing(8)
+        sidebar_col.addWidget(device_title)
+        sidebar_col.addLayout(status_row)
+        sidebar_col.addLayout(rec_row)
+        sidebar_col.addWidget(self.rec_status)
+        sidebar_col.addWidget(self.level_bar)
+        sidebar_col.addWidget(self.pads_list)
+        sidebar_col.addSpacing(10)
         sidebar_col.addWidget(samples_title)
         sidebar_col.addWidget(self.list, 1)
         sidebar_col.addWidget(self.remove_btn, 0, Qt.AlignLeft)
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(230)
+        sidebar.setFixedWidth(250)
         sidebar.setLayout(sidebar_col)
 
         # Editor card
@@ -119,8 +203,6 @@ class MainWindow(QMainWindow):
         self.name_edit.setObjectName("nameEdit")
         self.name_edit.setPlaceholderText("Sample name")
         self.name_edit.textEdited.connect(self._rename)
-        self.format_label = QLabel("Stereo  ·  44.1 kHz  ·  16-bit WAV")
-        self.format_label.setObjectName("muted")
         self.wave = WaveformView()
         self.wave.regionChanged.connect(self._region_changed)
         self.player.position.connect(self.wave.set_playhead)
@@ -140,7 +222,13 @@ class MainWindow(QMainWindow):
         self.normalize_box = Toggle(f"Normalize to {NORMALIZE_DB:g} dB")
         self.normalize_box.setChecked(self.settings.value("normalize", True, type=bool))
         self.normalize_box.toggled.connect(lambda on: self.settings.setValue("normalize", on))
+        self.normalize_box.toggled.connect(lambda _: self._mark_dirty(*self.takes))
         self.meter = LengthMeter(audio.MAX_SECONDS)
+        self.drag_btn = DragButton("⠿  Drag WAV",
+                                   lambda: self._drag_file(self.current()))
+        self.drag_btn.setToolTip("Drag this sample straight into the SEQTRAK app")
+        self.send_btn = QPushButton("Send trim to pad")
+        self.send_btn.clicked.connect(self._send_trim)
 
         controls = QHBoxLayout()
         controls.setSpacing(8)
@@ -151,13 +239,15 @@ class MainWindow(QMainWindow):
         controls.addSpacing(14)
         controls.addWidget(self.normalize_box)
         controls.addStretch()
+
         controls.addWidget(self.meter)
         card_col = QVBoxLayout()
         card_col.setContentsMargins(20, 16, 20, 18)
         card_col.setSpacing(10)
         name_row = QHBoxLayout()
         name_row.addWidget(self.name_edit, 1)
-        name_row.addWidget(self.format_label)
+        name_row.addWidget(self.send_btn)
+        name_row.addWidget(self.drag_btn)
         card_col.addLayout(name_row)
         card_col.addWidget(self.wave, 1)
         card_col.addLayout(controls)
@@ -176,6 +266,7 @@ class MainWindow(QMainWindow):
         save_to.setObjectName("muted")
         self.output_label = QLabel()
         self.output_label.setObjectName("chip")
+        self.output_label.setMinimumWidth(120)
         change_btn = QPushButton("Change…")
         change_btn.setObjectName("ghost")
         change_btn.clicked.connect(self._choose_output)
@@ -187,9 +278,15 @@ class MainWindow(QMainWindow):
         self._toast_timer = QTimer(self)
         self._toast_timer.setSingleShot(True)
         self._toast_timer.timeout.connect(self.toast.clear)
+        self.auto_save_box = Toggle("Auto-save")
+        self.auto_save_box.setToolTip("Save every sample to the output folder as soon as it "
+                                      "loads or changes")
+        self.auto_save_box.setChecked(self.settings.value("auto_save", False, type=bool))
+        self.auto_save_box.toggled.connect(self._auto_save_toggled)
         self.export_all_btn = QPushButton("Export all")
         self.export_all_btn.clicked.connect(self._export_all)
         self.export_btn = QPushButton("Export WAV")
+        self.export_btn.setToolTip("Save as a 44.1 kHz, 16-bit stereo WAV")
         self.export_btn.setObjectName("primary")
         self.export_btn.setDefault(True)
         self.export_btn.clicked.connect(self._export_current)
@@ -202,6 +299,8 @@ class MainWindow(QMainWindow):
         footer.addStretch()
         footer.addWidget(self.toast)
         footer.addSpacing(8)
+        footer.addWidget(self.auto_save_box)
+        footer.addSpacing(6)
         footer.addWidget(self.export_all_btn)
         footer.addWidget(self.export_btn)
 
@@ -216,6 +315,29 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self._update_output_label()
         self._show_take(-1)
+        watch = self.settings.value("watch_dir", "")
+        self._set_watch_folder(Path(watch) if watch and Path(watch).is_dir() else None)
+
+        self.device.status.connect(self._device_status)
+        self.device.padsChanged.connect(self._pads_changed)
+        self.device.transportStarted.connect(self._transport_started)
+        self.device.transportStopped.connect(self._transport_stopped)
+        self.recorder.stateChanged.connect(self._recorder_state)
+        self.recorder.elapsed.connect(
+            lambda s: self.rec_status.setText(f"●  Recording  {s:.1f} s"))
+        self.recorder.level.connect(self.level_bar.set_level)
+        self.recorder.takeReady.connect(self._recorded)
+        self.recorder.error.connect(self._recorder_error)
+        self._device_status(self.device.state, "")
+        self._recorder_state(self.recorder.state)
+        self.device.start()
+        if self.settings.value("rec_follow", False, type=bool):
+            self.follow_box.setChecked(True)
+
+    def closeEvent(self, event):
+        self.device.stop()
+        self.recorder.set_armed(False)
+        super().closeEvent(event)
 
     # Loading
 
@@ -228,10 +350,7 @@ class MainWindow(QMainWindow):
             except (OSError, ValueError) as e:
                 errors.append(f"{path.name}: {e}")
                 continue
-            self.takes.append(take)
-            item = QListWidgetItem(take.name)
-            self.list.addItem(item)
-            self._update_item(item, take)
+            self._append_take(take, select=False)
         if len(self.takes) > first_new:
             self.list.setCurrentRow(first_new)
         if errors:
@@ -254,11 +373,86 @@ class MainWindow(QMainWindow):
                  if u.toLocalFile().lower().endswith(".y3s")]
         self.add_files(paths)
 
+    def _append_take(self, take: Take, select: bool = True) -> None:
+        self.takes.append(take)
+        item = QListWidgetItem(take.label)
+        self.list.addItem(item)
+        self._update_item(item, take)
+        if select:
+            self.list.setCurrentRow(len(self.takes) - 1)
+        self._mark_dirty(take)
+        self._refresh_pads()
+
+    # Watch folder
+
+    def _set_watch_folder(self, folder: Path | None) -> None:
+        self._scanner = FolderScanner(folder) if folder else None
+        self.settings.setValue("watch_dir", str(folder) if folder else "")
+        if folder:
+            self._watch_timer.start()
+            self.watch_btn.setText(f"●  Watching {folder.name or folder}")
+            self.watch_btn.setToolTip(f"New .Y3S files saved to {folder} load automatically")
+            self.watch_btn.setObjectName("watching")
+        else:
+            self._watch_timer.stop()
+            self.watch_btn.setText("Watch folder…")
+            self.watch_btn.setToolTip("Pick the folder you export .Y3S files to; new ones "
+                                      "load automatically")
+            self.watch_btn.setObjectName("")
+        self.watch_btn.style().unpolish(self.watch_btn)
+        self.watch_btn.style().polish(self.watch_btn)
+
+    def _choose_watch_folder(self) -> None:
+        start = self.settings.value("watch_dir", "") or str(Path.home() / "Downloads")
+        folder = QFileDialog.getExistingDirectory(self, "Watch folder for SEQTRAK exports", start)
+        if folder:
+            self._set_watch_folder(Path(folder))
+            self._show_toast(f"Watching {Path(folder).name} for new .Y3S files")
+
+    def _watch_clicked(self) -> None:
+        if self._scanner is None:
+            self._choose_watch_folder()
+            return
+        menu = QMenu(self)
+        menu.addAction("Open folder", lambda: QDesktopServices.openUrl(
+            QUrl.fromLocalFile(str(self._scanner.folder))))
+        menu.addAction("Change folder…", self._choose_watch_folder)
+        menu.addAction("Stop watching", lambda: self._set_watch_folder(None))
+        menu.exec(self.watch_btn.mapToGlobal(self.watch_btn.rect().bottomLeft()))
+
+    def _poll_watch_folder(self) -> None:
+        if self._scanner is None:
+            return
+        for path in self._scanner.poll():
+            existing = next((t for t in self.takes if t.path == path), None)
+            try:
+                fresh = load_take(path)
+            except (OSError, ValueError) as e:
+                self._show_toast(f"Couldn't open {path.name}: {e}", error=True)
+                continue
+            if existing is None:
+                self._append_take(fresh)
+                self._show_toast(f"Loaded {path.name}")
+            else:
+                # Re-exported under the same name: take the new audio, keep the name.
+                existing.left, existing.right, existing.rate = fresh.left, fresh.right, fresh.rate
+                existing.start, existing.end = fresh.start, fresh.end
+                existing.device_name = fresh.device_name
+                row = self.takes.index(existing)
+                self._update_item(self.list.item(row), existing)
+                if row == self.list.currentRow():
+                    self._show_take(row)
+                self._mark_dirty(existing)
+                self._show_toast(f"Reloaded {path.name}")
+
     def _remove_current(self) -> None:
         row = self.list.currentRow()
         if row >= 0:
             self.player.stop()
-            del self.takes[row]
+            take = self.takes.pop(row)
+            if take in self._dirty:
+                self._dirty.remove(take)
+            self._refresh_pads()
             self.list.takeItem(row)
 
     # Current take
@@ -271,7 +465,7 @@ class MainWindow(QMainWindow):
         self.player.stop()
         take = self.current()
         for w in (self.name_edit, self.trim_btn, self.play_btn, self.remove_btn,
-                  self.export_btn):
+                  self.export_btn, self.drag_btn):
             w.setEnabled(take is not None)
         self.export_all_btn.setEnabled(bool(self.takes))
         if take is None:
@@ -279,6 +473,7 @@ class MainWindow(QMainWindow):
             self.wave.clear()
             self.meter.set_seconds(None)
             self.cut_btn.setEnabled(False)
+            self._update_send_button()
             return
         self.name_edit.setText(take.name)
         self.wave.set_sound(take.left, take.right, take.rate, take.start, take.end)
@@ -292,18 +487,23 @@ class MainWindow(QMainWindow):
         self._update_item(self.list.currentItem(), take)
         self.cut_btn.setEnabled(not take.fits)
         self.export_btn.setEnabled(take.fits)
+        self.drag_btn.setEnabled(take.fits)
+        self._update_send_button()
 
     def _rename(self, text: str) -> None:
         take = self.current()
         if take is not None:
             take.name = text
-            self.list.currentItem().setText(text or take.path.stem)
+            self.list.currentItem().setText(take.label)
+            self._refresh_pads()
+            self._mark_dirty(take)
 
     def _region_changed(self, start: int, end: int) -> None:
         take = self.current()
         if take is not None:
             take.start, take.end = start, end
             self._update_length()
+            self._mark_dirty(take)
 
     def _auto_trim(self) -> None:
         take = self.current()
@@ -311,6 +511,7 @@ class MainWindow(QMainWindow):
             take.auto_trim()
             self.wave.set_region(take.start, take.end)
             self._update_length()
+            self._mark_dirty(take)
 
     def _cut_to_limit(self) -> None:
         take = self.current()
@@ -318,6 +519,7 @@ class MainWindow(QMainWindow):
             take.end = take.start + int(audio.MAX_SECONDS * take.rate)
             self.wave.set_region(take.start, take.end)
             self._update_length()
+            self._mark_dirty(take)
 
     def _render(self, take: Take, enforce_limit: bool = True) -> tuple[array, array]:
         start, end = take.start, take.end
@@ -352,8 +554,9 @@ class MainWindow(QMainWindow):
             item.setData(ROLE_SECONDS, take.seconds)
             item.setData(ROLE_FITS, take.fits)
 
-    def _show_toast(self, text: str) -> None:
+    def _show_toast(self, text: str, error: bool = False) -> None:
         self.toast.setText(text)
+        self.toast.setStyleSheet(f"color: {theme.DANGER};" if error else "")
         self._toast_timer.start(5000)
 
     def _update_output_label(self) -> None:
@@ -379,15 +582,87 @@ class MainWindow(QMainWindow):
         """Write the take to the output folder. Returns the path, or None if skipped."""
         folder = self.output_dir()
         folder.mkdir(parents=True, exist_ok=True)
-        dest = folder / (safe_filename(take.name or take.path.stem) + ".wav")
-        if dest.exists() and ask_overwrite:
+        dest = folder / (safe_filename(take.label) + ".wav")
+        if dest.exists() and dest != take.saved_path and ask_overwrite:
             answer = QMessageBox.question(self, "Replace file?",
                                           f"{dest.name} already exists. Replace it?")
             if answer != QMessageBox.Yes:
                 return None
         left, right = self._render(take)
         audio.write_wav(dest, left, right, take.rate)
+        take.saved_path = dest
         return dest
+
+    # Auto-save: write each take to the output folder shortly after it changes.
+
+    def _auto_save_toggled(self, on: bool) -> None:
+        self.settings.setValue("auto_save", on)
+        if on:
+            self._mark_dirty(*self.takes)
+
+    def _mark_dirty(self, *takes: Take) -> None:
+        if not self.auto_save_box.isChecked():
+            return
+        for take in takes:
+            if take not in self._dirty:
+                self._dirty.append(take)
+        self._auto_save_timer.start(AUTO_SAVE_DELAY_MS)
+
+    def auto_save_take(self, take: Take) -> Path:
+        folder = self.output_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        stem = safe_filename(take.label)
+        dest = unique_path(folder, stem, ".wav", keep=take.saved_path)
+        if take.saved_path is not None and take.saved_path.parent == folder:
+            # Renamed: reuse the old file name's slot rather than leaving a stale copy.
+            if take.saved_path != dest and take.saved_path.exists():
+                take.saved_path.unlink()
+                dest = unique_path(folder, stem, ".wav")
+        left, right = self._render(take)
+        audio.write_wav(dest, left, right, take.rate)
+        take.saved_path = dest
+        return dest
+
+    def _flush_auto_save(self) -> None:
+        saved, failed = [], []
+        while self._dirty:
+            take = self._dirty.pop(0)
+            if not take.fits:
+                continue
+            try:
+                saved.append(self.auto_save_take(take))
+            except (OSError, ValueError) as e:
+                failed.append(f"{take.name}: {e}")
+        if failed:
+            self._show_toast("Auto-save failed: " + "; ".join(failed), error=True)
+        elif len(saved) == 1:
+            self._show_toast(f"✓  Auto-saved {saved[0].name}")
+        elif saved:
+            self._show_toast(f"✓  Auto-saved {len(saved)} samples")
+
+    # Drag out
+
+    def _drag_file(self, take: Take | None) -> Path | None:
+        """Write the take somewhere it can be dragged from, and return that path."""
+        if take is None:
+            return None
+        if not take.fits:
+            self._show_toast(f"{take.name} is over the {audio.MAX_SECONDS:g} s limit",
+                             error=True)
+            return None
+        try:
+            if self.auto_save_box.isChecked():
+                if take in self._dirty:
+                    self._dirty.remove(take)
+                return self.auto_save_take(take)
+            DRAG_DIR.mkdir(parents=True, exist_ok=True)
+            dest = DRAG_DIR / (safe_filename(take.label) + ".wav")
+            left, right = self._render(take)
+            audio.write_wav(dest, left, right, take.rate)
+            return dest
+        except (OSError, ValueError) as e:
+            self._show_toast(f"Couldn't prepare {take.name}: {e}", error=True)
+            return None
 
     def _export_current(self) -> None:
         take = self.current()
@@ -416,3 +691,158 @@ class MainWindow(QMainWindow):
         self._show_toast(f"✓  Saved {done} of {len(self.takes)}")
         if skipped:
             QMessageBox.warning(self, "Some samples were not exported", "\n".join(skipped))
+
+    # SEQTRAK connection and sampler pads
+
+    def _device_status(self, state: str, detail: str) -> None:
+        text, color = {
+            dev.UNAVAILABLE: ("MIDI support isn't available in this build", theme.FAINT),
+            dev.DISCONNECTED: ("Not connected. Plug in your SEQTRAK over USB.", theme.FAINT),
+            dev.BUSY: ("In use by another app. Close the SEQTRAK app to connect.",
+                       theme.ACCENT),
+            dev.SILENT: ("Connected, but SysEx is off, so pads can't be read.", theme.ACCENT),
+            dev.CONNECTED: (f"Connected{'  ·  ' + detail if detail else ''}", theme.OK),
+        }[state]
+        self.device_label.setText(text)
+        self.device_dot.setStyleSheet(f"background: {color}; border-radius: 4px;")
+        self.enable_btn.setVisible(state == dev.SILENT)
+        self.pads_list.setVisible(state == dev.CONNECTED)
+        self._update_send_button()
+
+    def _pad_state(self, pad: sysex.SamplerPad) -> str:
+        if pad.empty:
+            return "empty"
+        return "in_app" if self._take_for_pad(pad) else "new"
+
+    def _take_for_pad(self, pad: sysex.SamplerPad) -> Take | None:
+        return next((t for t in self.takes if t.device_name and t.device_name == pad.name
+                     and pad.end <= t.last_frame), None)
+
+    def _pad_for_take(self, take: Take | None) -> sysex.SamplerPad | None:
+        if take is None or not take.device_name or self.device.state != dev.CONNECTED:
+            return None
+        return next((p for p in self._pads.values() if not p.empty
+                     and p.name == take.device_name and p.end <= take.last_frame), None)
+
+    def _pads_changed(self, pads: list) -> None:
+        previous = self._pads
+        self._pads = {p.pad: p for p in pads}
+        for pad in pads:
+            old = previous.get(pad.pad)
+            if old is not None and old != pad and not pad.empty \
+                    and self._take_for_pad(pad) is None:
+                self._show_toast(f"Pad {pad.pad + 1} has a new sample \u201c{pad.name}\u201d. "
+                                 f"Export it from the SEQTRAK app to edit it here.")
+        self._refresh_pads()
+
+    def _refresh_pads(self) -> None:
+        for i in range(sysex.SAMPLER_PADS):
+            item = self.pads_list.item(i)
+            pad = self._pads.get(i)
+            if pad is None:
+                item.setText("")
+                item.setData(ROLE_PAD_STATE, "empty")
+                continue
+            state = self._pad_state(pad)
+            item.setText(pad.name if not pad.empty else "")
+            item.setData(ROLE_PAD_STATE, state)
+            item.setData(ROLE_PAD_SECONDS, pad.seconds)
+            item.setToolTip({
+                "empty": f"Pad {i + 1} is empty",
+                "new": f"Pad {i + 1}: not loaded here yet. Export it from the SEQTRAK app.",
+                "in_app": f"Pad {i + 1}: loaded. Click to edit it.",
+            }[state])
+        self._update_send_button()
+
+    def _pad_clicked(self, item: QListWidgetItem) -> None:
+        pad = self._pads.get(self.pads_list.row(item))
+        take = self._take_for_pad(pad) if pad else None
+        if take is not None:
+            self.list.setCurrentRow(self.takes.index(take))
+
+    def _update_send_button(self) -> None:
+        connected = self.device.state == dev.CONNECTED
+        self.send_btn.setVisible(connected)
+        take = self.current()
+        pad = self._pad_for_take(take)
+        self.send_btn.setEnabled(pad is not None and take is not None and take.fits)
+        if pad is not None:
+            self.send_btn.setText(f"Send trim to pad {pad.pad + 1}")
+            self.send_btn.setToolTip("Set this pad's start and end points (and name) on the "
+                                     "SEQTRAK to match this selection")
+        else:
+            self.send_btn.setText("Send trim to pad")
+            self.send_btn.setToolTip("Only for samples exported from a pad that's in the "
+                                     "SEQTRAK's current project")
+
+    def _send_trim(self) -> None:
+        take = self.current()
+        pad = self._pad_for_take(take)
+        if take is None or pad is None:
+            return
+        new_name = take.label if take.label != pad.name else None
+        try:
+            msgs = sysex.trim_messages(pad, take.start, take.end, take.last_frame, new_name)
+        except ValueError as e:
+            QMessageBox.warning(self, "Can't send trim", str(e))
+            return
+        rename = f" and rename it to \u201c{new_name}\u201d" if new_name else ""
+        answer = QMessageBox.question(
+            self, "Send trim to SEQTRAK?",
+            f"Set pad {pad.pad + 1} (\u201c{pad.name}\u201d) to play "
+            f"{take.start / take.rate:.2f} s to {take.end / take.rate:.2f} s{rename}?\n\n"
+            f"This edits the pad in the SEQTRAK's current project. Only the start and end "
+            f"points change; the recorded audio stays as it is.")
+        if answer != QMessageBox.Yes:
+            return
+        self.device.send_trim(msgs, pad.pad)
+        if new_name:
+            take.device_name = sysex.decode_name(sysex.encode_name(new_name))
+        self._show_toast(f"\u2713  Sent to pad {pad.pad + 1}")
+
+    # Recording from the SEQTRAK's USB audio
+
+    def _toggle_record(self) -> None:
+        if self.recorder.state == "recording":
+            self.recorder.stop_take()
+        else:
+            self.recorder.start_take()
+
+    def _follow_toggled(self, on: bool) -> None:
+        self.settings.setValue("rec_follow", on)
+        self.recorder.set_armed(on)
+        self._recorder_state(self.recorder.state)
+
+    def _transport_started(self) -> None:
+        if self.follow_box.isChecked():
+            self.recorder.start_take()
+
+    def _transport_stopped(self) -> None:
+        if self.follow_box.isChecked():
+            self.recorder.stop_take()
+
+    def _recorder_state(self, state: str) -> None:
+        recording = state == "recording"
+        self.rec_btn.setText("  Stop" if recording else "  Record")
+        self.rec_btn.setIcon(stop_icon(theme.TEXT) if recording else record_icon())
+        self.level_bar.setVisible(state != "idle")
+        if recording:
+            self.rec_status.setText("\u25cf  Recording")
+            self.rec_status.setStyleSheet(f"color: {theme.DANGER};")
+        elif state == "armed" and self.follow_box.isChecked():
+            self.rec_status.setText("Armed. Press Play on the SEQTRAK to record.")
+            self.rec_status.setStyleSheet("")
+        else:
+            self.rec_status.setText("Records the SEQTRAK's USB audio")
+            self.rec_status.setStyleSheet("")
+
+    def _recorder_error(self, message: str) -> None:
+        self._show_toast(message, error=True)
+        if self.follow_box.isChecked():
+            self.follow_box.setChecked(False)
+
+    def _recorded(self, left, right, rate: int) -> None:
+        take = Take(None, time.strftime("Take %H-%M-%S"), left, right, rate, 0, len(left))
+        take.auto_trim()
+        self._append_take(take)
+        self._show_toast(f"\u2713  Recorded {take.seconds:.1f} s")

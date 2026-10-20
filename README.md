@@ -22,6 +22,45 @@ in [FORMAT.md](FORMAT.md).
    (default `~/Music/SEQTRAK Samples`); **Show** opens it.
 5. Import the WAV into a synth track in the SEQTRAK app.
 
+### Faster round trips
+
+- **Watch folder:** click **Watch folder…** and pick the folder you export `.Y3S` files
+  to. New exports load on their own within a second, and re-exporting a sound with the
+  same name reloads it (keeping the name you gave it).
+- **Drag out:** drag a sample from the list, or the **Drag WAV** button, straight onto
+  the SEQTRAK app's import. No file dialogs.
+- **Auto-save:** turn it on and every sample is written to the output folder as soon as
+  it loads or you edit it. Renaming a sample renames its file.
+
+### Working with a connected SEQTRAK
+
+Plug the SEQTRAK into your computer over USB and the **SEQTRAK** panel in the sidebar
+comes alive:
+
+- **Record:** captures the SEQTRAK's USB audio straight into the app. Turn on
+  **Rec on Play** to start recording when you press Play on the SEQTRAK and stop when
+  you press Stop. A short pre-roll keeps the first hit. No export step, and no 16-second
+  limit while recording (you trim to 16 s afterwards).
+- **Sampler pads:** the 7 pads of the current project, with their names and lengths.
+  Green means the sample is loaded here; orange means it's on the device but not in the
+  app yet, so export it from the SEQTRAK app (with a watch folder it then loads itself).
+  The list refreshes every few seconds, so a new resample shows up on its own.
+- **Send trim to pad:** for a sample that came from a pad, sends your start/end points
+  (and new name) back to that pad on the SEQTRAK. Only the pad's settings change; the
+  recorded audio on the device stays as it is.
+
+Reading pads and sending trims uses MIDI System Exclusive messages from Yamaha's
+[SEQTRAK Data List](https://data.yamaha.com/files/download/other_assets/5/2226075/SEQTRAK_data_list_En_D0.pdf). Two things to know:
+
+- The SEQTRAK answers SysEx only when its *USB MIDI Transmit System Exclusive* setting
+  is on, and it's off by default. If the panel says SysEx is off, click **Enable**.
+- On Windows only one app can use the SEQTRAK's MIDI port at a time, so close the
+  SEQTRAK app while you use the panel and **Rec on Play**. The **Record** button works
+  either way, since it only needs the audio connection.
+
+The SEQTRAK's MIDI interface doesn't carry audio, so samples still reach a synth track
+through the SEQTRAK app's WAV import.
+
 The length meter shows the selection against the SEQTRAK's 16-second limit. Anything
 past the limit is shaded red and Export is disabled until you drag the end handle in
 or press **Cut to 16 s**. Edges that cut through sound get a short fade so they don't

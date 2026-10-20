@@ -14,6 +14,8 @@ import zipfile
 from array import array
 from dataclasses import dataclass
 
+from .sysex import NAME_SIZE, decode_name
+
 KEYBANK_HEADER_SIZE = 4
 KEYBANK_RECORD_SIZE = 64
 # Offsets inside one 64-byte keybank record in waveform0.bin.
@@ -37,11 +39,17 @@ class Keybank:
     frames: array  # signed 16-bit mono PCM, native byte order
 
 
+# element.bin starts with 4 bytes, then the name in the same 7-bit packed form
+# the SEQTRAK uses over MIDI (see sysex.decode_7bit).
+ELEMENT_NAME_OFFSET = 4
+
+
 @dataclass
 class Y3SSound:
     uuid: str
     content_number: int | None
     keybanks: list[Keybank]
+    name: str = ""  # the sample's name on the SEQTRAK
 
     @property
     def sample_rate(self) -> int:
@@ -93,6 +101,12 @@ def read_y3s(path) -> Y3SSound:
             return _read_member(zf, posixpath.join(folder, name))
 
         element = ET.fromstring(member("element.xml"))
+        try:
+            element_bin = member("element.bin")
+            name = decode_name(list(element_bin[ELEMENT_NAME_OFFSET:
+                                                ELEMENT_NAME_OFFSET + NAME_SIZE]))
+        except Y3SError:
+            name = ""
         waveform = member("waveform0.bin")
         if len(waveform) < KEYBANK_HEADER_SIZE:
             raise Y3SError("waveform0.bin is truncated")
@@ -136,4 +150,4 @@ def read_y3s(path) -> Y3SSound:
         raise Y3SError("keybanks have different lengths")
 
     uuid = element.findtext("UUID") or folder
-    return Y3SSound(uuid, _xml_int(element, "ContentNumber"), keybanks)
+    return Y3SSound(uuid, _xml_int(element, "ContentNumber"), keybanks, name)
