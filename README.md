@@ -1,5 +1,7 @@
 # SEQTRAK Sampler
 
+**Website:** https://rechandler.github.io/seqtrak_sampler/
+
 Companion tools for the Yamaha SEQTRAK. The SEQTRAK app exports resampled sounds
 as `.Y3S` files, which it can't import into a synth track. SEQTRAK Sampler (a desktop
 app) and `y3s2wav` (its command-line twin) turn them into trimmed stereo WAV files that
@@ -27,8 +29,10 @@ click. **Normalize** raises the peak to -1 dBFS.
 
 ### Getting the app
 
-Builds for macOS and Windows are produced by GitHub Actions on every push
-(Actions → Build → Artifacts). They aren't code-signed: on macOS, right-click the app
+Download the latest build from the [website](https://rechandler.github.io/seqtrak_sampler/#download)
+or the [Releases page](https://github.com/rechandler/seqtrak_sampler/releases/latest).
+Every push also builds macOS and Windows apps (Actions → Build → Artifacts); pushing a
+`v*` tag publishes them as a Release. They aren't code-signed: on macOS, right-click the app
 and choose **Open** the first time; on Windows, choose **More info → Run anyway**.
 
 To run from source instead:
