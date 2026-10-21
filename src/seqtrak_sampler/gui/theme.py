@@ -47,6 +47,14 @@ QLabel#sectionTitle {{
     font-weight: 600;
     letter-spacing: 1px;
 }}
+QLabel#versionChip {{
+    color: {MUTED};
+    background: {SURFACE_2};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-size: 11px;
+}}
 QLabel#chip {{
     background: {SURFACE_2};
     border: 1px solid {BORDER};

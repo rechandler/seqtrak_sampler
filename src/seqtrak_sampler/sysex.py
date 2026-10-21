@@ -27,6 +27,7 @@ SAMPLE_RATE = 44100
 BULK_HEADER = 0x11
 BULK_FOOTER = 0x12
 SAMPLER_ELEMENT_EDIT_BUFFER = 0x13
+SOUND_EDIT_BUFFER = 0x02  # 11 02 pp: the sound of part pp, all its elements included
 
 # SAMPLER Sample General block (pp. 152-154), at address 50 eA 00.
 SAMPLE_GENERAL_HI = 0x50
@@ -84,6 +85,11 @@ def pad_request(pad: int) -> list[int]:
     return bulk_request(BULK_HEADER, SAMPLER_ELEMENT_EDIT_BUFFER, pad)
 
 
+def sampler_sound_request() -> list[int]:
+    """Ask for the sampler track's whole sound: every pad's blocks in one dump."""
+    return bulk_request(BULK_HEADER, SOUND_EDIT_BUFFER, SAMPLER_PART)
+
+
 def sample_general_address(pad: int, offset: int = 0) -> tuple[int, int, int]:
     return (SAMPLE_GENERAL_HI, (pad << 4) | SAMPLER_PART, offset)
 
@@ -94,20 +100,30 @@ class BulkBlock:
     data: list[int]
 
 
-def parse_bulk_dump(msg: list[int]) -> BulkBlock | None:
-    """Parse F0 43 0n 7F 1C bh bl 0C ah am al data... cc F7 (p. 115)."""
-    if (len(msg) < 13 or msg[0] != 0xF0 or msg[1] != YAMAHA or msg[2] & 0xF0 != 0x00
-            or msg[3:5] != [GROUP_HI, GROUP_LO] or msg[7] != MODEL or msg[-1] != 0xF7):
-        return None
-    count = (msg[5] << 7) | msg[6]
-    body = msg[7:-2]  # Model ID, address, data
-    if count != len(body):
-        return None
+def bulk_dump_problem(msg: list[int]) -> str | None:
+    """Why msg isn't a SEQTRAK bulk dump this module can read, or None if it is."""
+    if len(msg) < 13 or msg[0] != 0xF0 or msg[-1] != 0xF7:
+        return "not a complete SysEx message"
+    if msg[1] != YAMAHA or msg[2] & 0xF0 != 0x00:
+        return "not a Yamaha bulk dump"
+    if msg[3:5] != [GROUP_HI, GROUP_LO] or msg[7] != MODEL:
+        return f"unexpected group/model {msg[3]:02X} {msg[4]:02X} / {msg[7]:02X}"
     # "The Check-sum is the value that results in a value of 0 for the lower 7
-    # bits when the Byte Count, Start Address, Data and Check-sum are added."
-    # Whether Model ID is included is ambiguous, so accept either reading.
+    # bits when the Byte Count, Start Address, Data and Check-sum are added"
+    # (p. 115). Whether Model ID is included is ambiguous, so accept either.
     total = msg[5] + msg[6] + sum(msg[8:-1])
     if total & 0x7F and (total + MODEL) & 0x7F:
+        return "checksum mismatch"
+    return None
+
+
+def parse_bulk_dump(msg: list[int]) -> BulkBlock | None:
+    """Parse F0 43 0n 7F 1C bh bl 0C ah am al data... cc F7 (p. 115).
+
+    The byte count isn't enforced: the data runs from after the address to the
+    checksum, whatever the count says.
+    """
+    if bulk_dump_problem(msg) is not None:
         return None
     return BulkBlock((msg[8], msg[9], msg[10]), msg[11:-2])
 

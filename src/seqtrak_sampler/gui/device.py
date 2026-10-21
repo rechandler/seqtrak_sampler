@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+from collections import deque
 from dataclasses import replace
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
@@ -13,6 +15,7 @@ PORT_SCAN_MS = 2000
 PAD_POLL_MS = 3000
 IDENTITY_TIMEOUT_MS = 2500
 PORT_NAME = "SEQTRAK"
+LOG_SIZE = 400
 
 # Connection states reported by Device.status
 UNAVAILABLE = "unavailable"    # python-rtmidi isn't installed
@@ -46,6 +49,7 @@ class Device(QObject):
         self.version = ""
         self.pads: dict[int, sysex.SamplerPad] = {}
         self._notes: dict[int, tuple[int, int]] = {}
+        self.log: deque[str] = deque(maxlen=LOG_SIZE)
         self._incoming.connect(self._handle)
 
         self._scan_timer = QTimer(self)
@@ -73,6 +77,7 @@ class Device(QObject):
     # Connection
 
     def _set_state(self, state: str, detail: str = "") -> None:
+        self.log.append(f"{time.strftime('%H:%M:%S')} state {state} {detail}".rstrip())
         self.state = state
         if state == CONNECTED:
             self._poll_timer.start()
@@ -139,8 +144,16 @@ class Device(QObject):
 
     # Messages
 
+    def _log(self, direction: str, msg: list[int], note: str = "") -> None:
+        stamp = time.strftime("%H:%M:%S")
+        text = " ".join(f"{b:02X}" for b in msg[:160])
+        if len(msg) > 160:
+            text += f" ... ({len(msg)} bytes)"
+        self.log.append(f"{stamp} {direction} {text}{'  ' + note if note else ''}")
+
     def send(self, msg: list[int]) -> None:
         if self._out is not None:
+            self._log("->", msg)
             self._out.send_message(msg)
 
     def enable_sysex(self) -> None:
@@ -149,8 +162,11 @@ class Device(QObject):
         QTimer.singleShot(300, self.probe)
 
     def request_pads(self) -> None:
+        # Two documented ways to read the pads; whichever the SEQTRAK answers fills
+        # them in (repeats are harmless).
         for pad in range(sysex.SAMPLER_PADS):
             self.send(sysex.pad_request(pad))
+        self.send(sysex.sampler_sound_request())
 
     def _poll(self) -> None:
         # Only poll while this app is in front: in the background the user may be
@@ -176,6 +192,7 @@ class Device(QObject):
     def _handle(self, msg: list[int]) -> None:
         if not msg:
             return
+        self._log("<-", msg)
         if msg[0] in (sysex.REALTIME_START, sysex.REALTIME_CONTINUE):
             self.transportStarted.emit()
             return
@@ -193,6 +210,7 @@ class Device(QObject):
             return
         block = sysex.parse_bulk_dump(msg)
         if block is None:
+            self.log.append(f"   ignored: {sysex.bulk_dump_problem(msg)}")
             return
         notes = sysex.pad_notes_from_block(block)
         if notes is not None:
@@ -203,7 +221,11 @@ class Device(QObject):
                 self.pads[index] = replace(known, note_low=low, note_high=high)
                 self.padsChanged.emit([self.pads[i] for i in sorted(self.pads)])
             return
-        pad = sysex.pad_from_block(block)
+        try:
+            pad = sysex.pad_from_block(block)
+        except ValueError as e:
+            self.log.append(f"   ignored: {e} ({len(block.data)} data bytes)")
+            return
         if pad is None:
             return
         if pad.pad in self._notes:

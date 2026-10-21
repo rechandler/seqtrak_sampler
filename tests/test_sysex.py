@@ -31,6 +31,19 @@ class SysexTests(unittest.TestCase):
         self.assertEqual(sysex.enable_usb_sysex_transmit(),
                          [0xF0, 0x43, 0x10, 0x7F, 0x1C, 0x0C, 0x00, 0x00, 0x10, 0x01, 0xF7])
 
+    def test_sampler_sound_request(self):
+        self.assertEqual(sysex.sampler_sound_request(),
+                         [0xF0, 0x43, 0x20, 0x7F, 0x1C, 0x0C, 0x11, 0x02, 0x0A, 0xF7])
+
+    def test_bulk_dump_ignores_byte_count(self):
+        msg = bulk_dump(sysex.sample_general_address(0), sample_general())
+        msg[5], msg[6] = 0, 0x10   # wrong count; fix the checksum to match
+        body_total = msg[5] + msg[6] + sum(msg[8:-2])
+        msg[-2] = (-body_total) & 0x7F
+        self.assertIsNotNone(sysex.parse_bulk_dump(msg))
+        self.assertEqual(sysex.bulk_dump_problem([0xF0, 0x41, 0xF7]),
+                         "not a complete SysEx message")
+
     def test_identity_reply(self):
         reply = [0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x43, 0x00, 0x41, 0x64, 0x06, 0x0A,
                  0x00, 0x00, 0x7F, 0xF7]
