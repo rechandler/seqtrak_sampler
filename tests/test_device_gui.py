@@ -52,23 +52,53 @@ class FakeSeqtrak:
                         0x00, 0x00, 0x7F, 0xF7])
         elif msg[:9] == sysex.pad_request(msg[8])[:9] and len(msg) == 10:
             pad = msg[8]
-            p = self.pads.get(pad, dict(name="", start=0, end=0))
+            p = self.pad(pad)
             osc = [0] * 109
-            osc[sysex.NOTE_LIMIT_LOW] = osc[sysex.NOTE_LIMIT_HIGH] = 60 + pad
-            self.reply(bulk_dump((sysex.OSCILLATOR_HI, (pad << 4) | 0x0A, 0x00), osc))
+            osc[sysex.ELEMENT_ASSIGN] = int(p["assigned"])
+            osc[sysex.WAVE_SELECT] = 1
+            osc[sysex.WAVE_NUMBER:sysex.WAVE_NUMBER + 2] = [p["wave"] >> 7, p["wave"] & 0x7F]
+            osc[sysex.NOTE_LIMIT_LOW] = p["note_low"]
+            osc[sysex.NOTE_LIMIT_HIGH] = p["note_high"]
+            self.reply(bulk_dump(sysex.oscillator_address(pad, 0), osc))
             self.reply(bulk_dump(sysex.sample_general_address(pad),
-                                 sample_general(p["name"], p["start"], p["end"])))
+                                 sample_general(p["name"], p["start"], p["end"],
+                                                int(p["loop_on"]), p["loop_length"])))
+        elif msg[2] == 0x10 and msg[6] == sysex.OSCILLATOR_HI:
+            p, offset = self.pad(msg[7] >> 4), msg[8]
+            if offset == sysex.ELEMENT_ASSIGN:
+                p["assigned"] = bool(msg[9])
+            elif offset == sysex.WAVE_NUMBER:
+                p["wave"] = (msg[9] << 7) | msg[10]
+            elif offset == sysex.NOTE_LIMIT_LOW:
+                p["note_low"] = msg[9]
+            elif offset == sysex.NOTE_LIMIT_HIGH:
+                p["note_high"] = msg[9]
         elif msg[2] == 0x10 and msg[6] == 0x50:
-            pad, offset = msg[7] >> 4, msg[8]
-            p = self.pads.setdefault(pad, dict(name="", start=0, end=0))
+            p, offset = self.pad(msg[7] >> 4), msg[8]
             if offset < sysex.NAME_SIZE:
                 packed = p.setdefault("packed_name", sysex.encode_name(p["name"]))
                 packed[offset] = msg[9]
                 p["name"] = sysex.decode_name(packed)
+            elif offset == sysex.LOOP_ON:
+                p["loop_on"] = bool(msg[9])
+            elif offset == sysex.LOOP_LENGTH:
+                p["loop_length"] = sysex.decode_point(msg[9:13])
             elif offset == sysex.START_POINT:
                 p["start"] = sysex.decode_point(msg[9:13])
             elif offset == sysex.END_POINT:
                 p["end"] = sysex.decode_point(msg[9:13])
+
+    def pad(self, pad):
+        """The pad's state, with what a real SEQTRAK reports for anything not set."""
+        p = self.pads.setdefault(pad, dict(name="", start=0, end=0))
+        has_sample = p["end"] > 0
+        p.setdefault("wave", 400 + pad if has_sample else 0)
+        p.setdefault("assigned", has_sample)
+        p.setdefault("note_low", 60 + pad if has_sample else 0)
+        p.setdefault("note_high", 60 + pad if has_sample else 127)
+        p.setdefault("loop_on", False)
+        p.setdefault("loop_length", p["end"])     # one-shot pads report their last frame
+        return p
 
     def module(self):
         device = self
@@ -233,52 +263,7 @@ class DevicePanelTests(unittest.TestCase):
         w._send_trim()
         self.assertEqual(fake.pads[1]["start"], silence)
 
-    def test_load_slices_to_pads(self):
-        from seqtrak_sampler.gui.loader import Job, SliceLoader
-        fake = FakeSeqtrak()
-        fake.pads = {}
-        w = self.make_window(fake)
-        rate = 44100
-        source = array("h", [0] * 441 + [6000] * 88200)          # 2 s of sound
-        jobs = [Job(2, 0, 44100, "Loop 1"), Job(4, 44100, len(source), "Loop 2")]
-        played = []
-
-        def fake_play(left, right, rate_, offset, to_seqtrak=False):
-            played.append((len(left), to_seqtrak))
-            QTimer.singleShot(0, w.player.stopped.emit)
-        w.player.play = fake_play
-
-        loader = SliceLoader(w, source, array("h", source), rate, jobs)
-        self.assertEqual(fake.sent[-1][6:10], [0x00, 0x00, 0x19, 0x02])   # USB Audio In
-
-        silence_before = 30000                      # what the SEQTRAK recorded first
-        for job in jobs:
-            loader._on_action()                     # Play into SEQTRAK
-            self.app.processEvents()
-            self.assertEqual(played[-1][1], True)
-            # The SEQTRAK sampled: its pad now holds silence + the whole source.
-            fake.pads[job.pad] = dict(name="Sample", start=0,  # fresh sample on the pad
-                                      end=silence_before + len(source) + 9999 | 0xF)
-            w.device.request_pads()
-            pad = w._pads[job.pad]
-            # Playing the pad back: its sound shows up after the recorded silence.
-            capture = array("h", [0] * (silence_before + 441) + [6000] * 88200)
-            loader._captured(pad, capture, array("h", capture), rate)
-            w.device.request_pads()
-
-        offset = silence_before + 441 - 441
-        self.assertEqual(fake.pads[2]["start"], offset)
-        self.assertEqual(fake.pads[4]["start"], offset + 44100)
-        self.assertEqual(fake.pads[4]["end"],
-                         sysex.end_point_for(offset + len(source), w._pads[4].last_frame))
-        self.assertEqual([w._pads[2].name, w._pads[4].name], ["Loop 1", "Loop 2"])
-        self.assertEqual(loader.progress.text(), "DONE")
-        source_changes = [m for m in fake.sent if m[6:9] == [0x00, 0x00, 0x19]]
-        self.assertEqual(source_changes[-1][9], 0x01)                    # source restored
-        # Re-sampled pads hold new recordings: no stale undo steps for them.
-        self.assertNotIn("Loop 1", w._history)
-
-    def test_slice_mode_pad_map_and_jobs(self):
+    def test_slice_mode_loads_segments_onto_pads_and_undoes(self):
         from PySide6.QtWidgets import QMessageBox
 
         from seqtrak_sampler.gui import slice_mode
@@ -289,54 +274,45 @@ class DevicePanelTests(unittest.TestCase):
         w.mode_group.button(1).click()
         panel = w.slice_panel
         self.assertEqual(w.stack.currentWidget(), panel)
+        self.assertEqual(w._pads[0].wave, 400)
 
         sound = array("h", [3000] * 132300)
         panel.set_source(slice_mode.Source("Break", sound, array("h", sound), 44100,
                                            pad=0, device_offset=1000))
         panel._split(3)
         self.assertEqual(panel.count(), 3)
-        tiles = panel.pad_map._tiles
-        self.assertEqual([t[2] for t in tiles],
+        self.assertEqual([t[2] for t in panel.pad_map._tiles],
                          ["source", "replace", "empty", "unused", "unused", "unused",
                           "unused"])
         self.assertEqual(panel.load_btn.text(), "Load to pads 1\u20133")
         self.assertTrue(panel.load_btn.isEnabled())
 
-        captured = {}
-
-        class FakeLoader:
-            def __init__(self, window, left, right, rate, jobs):
-                captured["jobs"] = jobs
-
-            def exec(self):
-                return 0
-        original = slice_mode.SliceLoader
-        slice_mode.SliceLoader = FakeLoader
-        self.addCleanup(setattr, slice_mode, "SliceLoader", original)
         QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
         panel._load()
-        jobs = captured["jobs"]
-        self.assertEqual([(j.pad, j.trim_only, j.name) for j in jobs],
-                         [(0, True, "Break 1"), (1, False, "Break 2"),
-                          (2, False, "Break 3")])
-        self.assertEqual((jobs[1].start, jobs[1].end), (44100, 88200))
-        self.assertEqual(jobs[0].device_offset, 1000)
+        w.device.request_pads()          # what send_trim schedules, done right away
+        # Nothing is played into the SEQTRAK: no notes, no sampling source change.
+        self.assertFalse(any(m[0] != 0xF0 for m in fake.sent))
+        self.assertFalse(any(m[6:9] == [0x00, 0x00, 0x19] for m in fake.sent))
+        # Every pad plays the source pad's recording, trimmed to its segment.
+        for i, (start, end) in enumerate([(1000, 45100), (45100, 89200), (89200, 133300)]):
+            p = fake.pads[i]
+            self.assertEqual((p["wave"], p["assigned"]), (400, True), i)
+            self.assertEqual((p["note_low"], p["note_high"]), (60 + i, 60 + i), i)
+            self.assertEqual(p["start"], start, i)
+            self.assertEqual(p["end"], sysex.end_point_for(end, 300015), i)
+            self.assertEqual(p["name"], f"Break {i + 1}")
+        self.assertEqual(fake.pads[2]["loop_length"], 300015)
+        self.assertFalse(fake.pads[1]["loop_on"])
 
-    def test_loader_trims_source_pad_without_sampling(self):
-        from seqtrak_sampler.gui.loader import Job, SliceLoader
-        fake = FakeSeqtrak()
-        fake.pads = {0: dict(name="Break", start=1000, end=300015)}
-        w = self.make_window(fake)
-        sound = array("h", [3000] * 132300)
-        loader = SliceLoader(w, sound, array("h", sound), 44100,
-                             [Job(0, 0, 44100, "Break 1", trim_only=True,
-                                  device_offset=1000)])
+        self.assertTrue(panel.undo_btn.isVisible() or not panel.isVisible())
+        panel._undo_load()
         w.device.request_pads()
-        self.assertEqual((fake.pads[0]["start"], w._pads[0].name), (1000, "Break 1"))
-        self.assertEqual(fake.pads[0]["end"], sysex.end_point_for(45100, 300015))
-        self.assertEqual(loader.progress.text(), "DONE")
-        self.assertFalse(any(m[6:9] == [0x00, 0x00, 0x19] for m in fake.sent))  # no sampling
-        self.assertIn("Break 1", w._history)       # trimming can be undone
+        self.assertEqual((fake.pads[0]["name"], fake.pads[0]["start"],
+                          fake.pads[0]["end"]), ("Break", 1000, 300015))
+        self.assertEqual((fake.pads[1]["name"], fake.pads[1]["wave"], fake.pads[1]["end"]),
+                         ("Vox chop", 401, 88207))
+        self.assertFalse(fake.pads[2]["assigned"])
+        self.assertTrue(w._pads[2].empty)
 
     def test_note_messages_play_the_pad(self):
         fake = FakeSeqtrak()

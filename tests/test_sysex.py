@@ -123,6 +123,40 @@ class SysexTests(unittest.TestCase):
         self.assertEqual(len(sysex.trim_messages(no_loop, 0, 1000, 511567, name="Old")), 2)
 
 
+class SliceMessageTests(unittest.TestCase):
+    def test_wave_messages_point_pad_at_a_user_wave(self):
+        msgs = sysex.wave_messages(3, 300)
+        self.assertEqual(msgs[0], [0xF0, 0x43, 0x10, 0x7F, 0x1C, 0x0C, 0x41, 0x3A, 0x01,
+                                   0x01, 0xF7])                       # user wave
+        self.assertEqual(msgs[1][6:11], [0x41, 0x3A, 0x03, 300 >> 7, 300 & 0x7F])
+        self.assertEqual([m[9] for m in msgs[2:4]], [63, 63])           # pad 4's note
+        self.assertEqual(msgs[4][6:10], [0x41, 0x3A, 0x00, 0x01])       # assigned
+        with self.assertRaises(ValueError):
+            sysex.wave_messages(3, 0)
+
+    def test_slice_messages_share_the_source_recording(self):
+        source = sysex.SamplerPad(0, "Break", 1000, 300015, False, 300015, wave=412)
+        msgs = sysex.slice_messages(2, source, 45100, 89200, "Break 3")
+        self.assertEqual(msgs[:5], sysex.wave_messages(2, 412))
+        by_offset = {m[8]: m[9:-1] for m in msgs[5:] if m[6] == 0x50}
+        self.assertEqual(by_offset[sysex.LOOP_ON], [0])
+        self.assertEqual(sysex.decode_point(by_offset[sysex.LOOP_LENGTH]), 300015)
+        self.assertEqual(sysex.decode_point(by_offset[sysex.START_POINT]), 45100)
+        self.assertEqual(sysex.decode_point(by_offset[sysex.END_POINT]),
+                         sysex.end_point_for(89200, 300015))
+        with self.assertRaises(ValueError):
+            sysex.slice_messages(2, sysex.SamplerPad(0, "x", 0, 99, False, 99), 0, 50, "x")
+
+    def test_restore_puts_wave_back_or_switches_pad_off(self):
+        now = sysex.SamplerPad(2, "Break 3", 45100, 89207, False, 300015, 62, 62, 412, True)
+        before = sysex.SamplerPad(2, "Vox", 0, 88207, False, 88207, 62, 62, 401, True)
+        msgs = sysex.restore_messages(now, before)
+        self.assertIn(sysex.wave_messages(2, 401)[1], msgs)
+        empty = sysex.SamplerPad(2, "", 0, 0, False, 0, 0, 127, 0, False)
+        msgs = sysex.restore_messages(now, empty)
+        self.assertIn(sysex.parameter_change(sysex.oscillator_address(2, 0), [0]), msgs)
+
+
 class RestoreTests(unittest.TestCase):
     def test_restore_points_loop_and_name(self):
         now = sysex.SamplerPad(1, "Trimmed", 5000, 9999, True, 4000)

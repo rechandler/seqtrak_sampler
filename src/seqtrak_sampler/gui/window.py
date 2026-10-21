@@ -1039,11 +1039,22 @@ class MainWindow(QMainWindow):
         self._save_history()
 
     def _undo_trim(self) -> None:
-        take = self.current()
-        pad = self._pad_for_take(take)
+        pad = self._pad_for_take(self.current())
+        if pad is not None and self.undo_pad(pad.pad):
+            self._show_toast(f"\u21b6  Pad {pad.pad + 1} is back to how it was before the "
+                             f"last Apply")
+            self._reload_pad(pad.pad)
+
+    def can_undo(self, index: int) -> bool:
+        pad = self._pads.get(index)
+        return pad is not None and bool(self._history.get(pad.name))
+
+    def undo_pad(self, index: int) -> bool:
+        """Put a pad back the way it was before the app last changed it."""
+        pad = self._pads.get(index)
         stack = self._history.get(pad.name) if pad is not None else None
         if not stack:
-            return
+            return False
         saved = sysex.SamplerPad(**stack.pop())
         saved.pad = pad.pad
         del self._history[pad.name]
@@ -1051,9 +1062,7 @@ class MainWindow(QMainWindow):
             self._history[saved.name] = stack
         self._save_history()
         self.device.send_trim(sysex.restore_messages(pad, saved), pad.pad)
-        self._show_toast(f"\u21b6  Pad {pad.pad + 1} is back to how it was before the last "
-                         f"Apply")
-        self._reload_pad(pad.pad)
+        return True
 
     def _reload_current(self) -> None:
         pad = self._pad_for_take(self.current())

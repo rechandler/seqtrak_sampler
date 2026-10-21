@@ -1,4 +1,4 @@
-"""Plays a region of a stereo sound through the default output, or into the SEQTRAK."""
+"""Plays a region of a stereo sound through the default output device."""
 
 from __future__ import annotations
 
@@ -8,15 +8,6 @@ from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QTimer, Sign
 from PySide6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
 
 from .. import audio
-
-SEQTRAK_NAME = "SEQTRAK"
-
-
-def find_seqtrak_output():
-    for dev in QMediaDevices.audioOutputs():
-        if SEQTRAK_NAME in dev.description().upper():
-            return dev
-    return None
 
 
 class Player(QObject):
@@ -37,20 +28,10 @@ class Player(QObject):
     def playing(self) -> bool:
         return self._sink is not None
 
-    def play(self, left: array, right: array, rate: int, offset: int,
-             to_seqtrak: bool = False) -> None:
-        """Play the given frames; `offset` is their position in the full sound.
-
-        With to_seqtrak, the audio goes to the SEQTRAK over USB (so it can sample it)
-        instead of the computer's speakers.
-        """
+    def play(self, left: array, right: array, rate: int, offset: int) -> None:
+        """Play the given frames; `offset` is their position in the full sound."""
         self.stop()
-        if to_seqtrak:
-            device = find_seqtrak_output()
-            if device is None:
-                raise RuntimeError("SEQTRAK audio output not found. Is it connected over USB?")
-        else:
-            device = QMediaDevices.defaultAudioOutput()
+        device = QMediaDevices.defaultAudioOutput()
         if device.isNull():
             raise RuntimeError("no audio output device found")
         fmt = QAudioFormat()

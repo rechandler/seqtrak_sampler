@@ -27,25 +27,21 @@ in [FORMAT.md](FORMAT.md).
 Switch the header from **Edit** to **✂ Slice**. Slice mode is separate from Edit mode, so
 trimming never writes to other pads by accident.
 
-1. **Source:** pad 1 opens by default (the SEQTRAK plays it once). Pick another pad or a
-   loaded sample from **Source**, or click a pad in the sidebar.
+1. **Source:** pad 1 opens by default (the SEQTRAK plays it once so the app can show
+   it). Pick another pad from **Source**, or click a pad in the sidebar.
 2. **Segments:** use **−/+** for equal segments, click the waveform to add cuts (drag to
    move, right-click to remove), or **Auto-detect hits**. The handles set the overall
    start and end.
 3. **Pad map:** segment N goes to pad N. Each pad tile shows its segment's length and
-   what happens to it: *source · trimmed*, *empty*, or *replaces "…"*. Pads after the
-   last segment are left alone. Click a tile to hear its segment.
-4. **Load to pads 1–N:** the source pad is just trimmed. Every other pad goes through a
-   short guided step: press the pad, then **REC SAMPLE**, click **Play into SEQTRAK**
-   (the app switches the SEQTRAK's sampling source to USB audio and plays the whole
-   sample into it), press **REC SAMPLE** to stop, click **Next**. The app plays the pad
-   back to find where the sample landed and trims it to its segment, named "Source 2",
-   "Source 3", …
+   what happens to it: *source · trimmed*, *empty*, or *was "…"*. Pads after the last
+   segment are left alone. Click a tile to hear its segment.
+4. **Load to pads 1–N:** done in one click, with nothing to record. Every pad is set to
+   play the source pad's recording (it's already on the SEQTRAK) and trimmed to its own
+   segment, named "Source 1", "Source 2", … Play the pads on the SEQTRAK to hear them.
 
-Every pad keeps the whole sample, so you can widen a segment later in Edit mode. Undo
-works for the source pad. A pad that gets a new recording can't get its old one back, so
-the app asks before replacing any. When it's done, the sampling source is set back to
-the built-in mic / AUDIO IN.
+**Undo** puts every pad back the way it was, including pads that had other samples:
+their recordings stay on the SEQTRAK, so nothing is lost. The app asks before it uses
+pads that already hold a sample. Each pad can be fine-tuned later in Edit mode.
 
 ### Faster round trips
 

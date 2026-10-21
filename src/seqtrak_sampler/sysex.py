@@ -50,8 +50,12 @@ REALTIME_START, REALTIME_CONTINUE, REALTIME_STOP = 0xFA, 0xFB, 0xFC
 # AWM Sound Element "Oscillator / Amplitude / Pitch" block (p. 147), at 41 eA 00.
 # Note Limit Low/High give the note range that plays each sampler pad.
 OSCILLATOR_HI = 0x41
+ELEMENT_ASSIGN = 0x00
+WAVE_SELECT = 0x01      # 1 = user wave (fixed on the sampler)
+WAVE_NUMBER = 0x03      # 2 bytes: user wave 1-2048, the recording the pad plays
 NOTE_LIMIT_LOW = 0x10
 NOTE_LIMIT_HIGH = 0x11
+BASE_NOTE = 60          # pad n plays note 60 + n on a real SEQTRAK
 
 SAMPLER_CHANNEL = 10  # MIDI channel 11 (p. 2)
 MAX_FRAMES = int(16 * SAMPLE_RATE)
@@ -193,6 +197,8 @@ class SamplerPad:
     loop_length: int
     note_low: int | None = None   # from the oscillator block, once received
     note_high: int | None = None
+    wave: int | None = None       # user wave number (the recording the pad plays)
+    assigned: bool | None = None  # Element Assign: is the pad switched on
 
     @property
     def note(self) -> int | None:
@@ -229,15 +235,72 @@ def parse_sample_general(pad: int, data: list[int]) -> SamplerPad:
     )
 
 
-def pad_notes_from_block(block: BulkBlock) -> tuple[int, int, int] | None:
-    """Return (pad, note_low, note_high) if this is a sampler pad's oscillator block."""
+@dataclass
+class PadOscillator:
+    pad: int
+    note_low: int
+    note_high: int
+    wave: int
+    assigned: bool
+
+
+def pad_oscillator_from_block(block: BulkBlock) -> PadOscillator | None:
+    """The settings we use from a sampler pad's oscillator block (41 eA 00, p. 147)."""
     hi, mid, lo = block.address
     if hi != OSCILLATOR_HI or lo != 0 or mid & 0x0F != SAMPLER_PART:
         return None
     pad = mid >> 4
-    if pad >= SAMPLER_PADS or len(block.data) <= NOTE_LIMIT_HIGH:
+    d = block.data
+    if pad >= SAMPLER_PADS or len(d) <= NOTE_LIMIT_HIGH:
         return None
-    return pad, block.data[NOTE_LIMIT_LOW], block.data[NOTE_LIMIT_HIGH]
+    return PadOscillator(pad, d[NOTE_LIMIT_LOW], d[NOTE_LIMIT_HIGH],
+                         (d[WAVE_NUMBER] << 7) | d[WAVE_NUMBER + 1], bool(d[ELEMENT_ASSIGN]))
+
+
+def pad_notes_from_block(block: BulkBlock) -> tuple[int, int, int] | None:
+    """Return (pad, note_low, note_high) if this is a sampler pad's oscillator block."""
+    osc = pad_oscillator_from_block(block)
+    return None if osc is None else (osc.pad, osc.note_low, osc.note_high)
+
+
+def oscillator_address(pad: int, offset: int) -> tuple[int, int, int]:
+    return (OSCILLATOR_HI, (pad << 4) | SAMPLER_PART, offset)
+
+
+def wave_messages(pad: int, wave: int, note_low: int | None = None,
+                  note_high: int | None = None, assigned: bool = True) -> list[list[int]]:
+    """Point a pad at user wave `wave` (a recording already on the SEQTRAK) and
+    switch it on, playing on its own note."""
+    if not 1 <= wave <= 2048:
+        raise ValueError(f"user wave number out of range: {wave}")
+    note_low = BASE_NOTE + pad if note_low is None else note_low
+    note_high = note_low if note_high is None else note_high
+    return [
+        parameter_change(oscillator_address(pad, WAVE_SELECT), [0x01]),
+        parameter_change(oscillator_address(pad, WAVE_NUMBER), [wave >> 7, wave & 0x7F]),
+        parameter_change(oscillator_address(pad, NOTE_LIMIT_LOW), [note_low]),
+        parameter_change(oscillator_address(pad, NOTE_LIMIT_HIGH), [note_high]),
+        parameter_change(oscillator_address(pad, ELEMENT_ASSIGN), [int(assigned)]),
+    ]
+
+
+def slice_messages(target: int, source: SamplerPad, start: int, end_exclusive: int,
+                   name: str) -> list[list[int]]:
+    """Make pad `target` play source's recording from start to end (frames of that
+    recording), named `name`."""
+    if source.wave is None:
+        raise ValueError("the source pad's recording isn't known yet")
+    last = source.last_frame
+    end = end_point_for(end_exclusive, last)
+    if not 0 <= start < end:
+        raise ValueError("segment is too short for the SEQTRAK")
+    msgs = wave_messages(target, source.wave)
+    msgs.append(parameter_change(sample_general_address(target, LOOP_ON), [0x00]))
+    msgs.append(parameter_change(sample_general_address(target, LOOP_LENGTH),
+                                 encode_point(last)))
+    msgs += points_messages(target, start, end)
+    msgs += name_messages(target, name)
+    return msgs
 
 
 def note_on(note: int, velocity: int = 100) -> list[int]:
@@ -297,8 +360,23 @@ def name_messages(pad: int, name: str) -> list[list[int]]:
 
 
 def restore_messages(current: SamplerPad, saved: SamplerPad) -> list[list[int]]:
-    """Put a pad's start, end, loop length and name back to a saved state."""
-    msgs = points_messages(current.pad, saved.start, saved.end)
+    """Put a pad's recording, start, end, loop length and name back to a saved state."""
+    msgs = []
+    if saved.wave is not None and (saved.wave, saved.assigned, saved.note_low) != \
+            (current.wave, current.assigned, current.note_low):
+        if saved.wave >= 1:
+            msgs += wave_messages(current.pad, saved.wave, saved.note_low, saved.note_high,
+                                  bool(saved.assigned))
+        else:
+            msgs.append(parameter_change(oscillator_address(current.pad, ELEMENT_ASSIGN),
+                                         [int(bool(saved.assigned))]))
+    if saved.empty:
+        msgs += points_messages(current.pad, 0, 0)
+    else:
+        msgs += points_messages(current.pad, saved.start, saved.end)
+    if saved.loop_on != current.loop_on:
+        msgs.append(parameter_change(sample_general_address(current.pad, LOOP_ON),
+                                     [int(saved.loop_on)]))
     if saved.loop_length != current.loop_length:
         msgs.append(parameter_change(sample_general_address(current.pad, LOOP_LENGTH),
                                      encode_point(saved.loop_length)))

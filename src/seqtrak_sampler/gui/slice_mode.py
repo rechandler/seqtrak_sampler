@@ -1,4 +1,9 @@
-"""Slice mode: cut one sample into segments and load segment N onto pad N."""
+"""Slice mode: cut a pad's sample into segments and put segment N on pad N.
+
+No audio is copied: pads 2..N are pointed at the source pad's recording (its user
+wave number) and each is given its own start and end point. That's instant, exact to
+the frame, and undoable, since the pads' previous recordings stay on the SEQTRAK.
+"""
 
 from __future__ import annotations
 
@@ -12,10 +17,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import audio, slicing, sysex
+from .. import slicing, sysex
 from . import device as dev
 from . import theme
-from .loader import Job, SliceLoader
 from .waveform import WaveformView
 
 
@@ -25,8 +29,8 @@ class Source:
     left: array
     right: array
     rate: int
-    pad: int | None = None      # the pad that holds this audio, if any
-    device_offset: int = 0      # that pad's frame for source frame 0
+    pad: int                    # the pad whose recording this is
+    device_offset: int = 0      # the recording's frame for source frame 0
 
 
 class PadMap(QWidget):
@@ -109,6 +113,7 @@ class SlicePanel(QWidget):
         super().__init__()
         self.window = window
         self.source: Source | None = None
+        self._last_load: list[int] = []   # pads changed by the last load, for Undo
         self.setObjectName("card")
         self.setAttribute(Qt.WA_StyledBackground)
 
@@ -169,8 +174,13 @@ class SlicePanel(QWidget):
         self.load_btn = QPushButton()
         self.load_btn.setObjectName("primary")
         self.load_btn.clicked.connect(self._load)
+        self.undo_btn = QPushButton("↶  Undo")
+        self.undo_btn.setToolTip("Put the pads back the way they were before this load")
+        self.undo_btn.clicked.connect(self._undo_load)
+        self.undo_btn.hide()
         bottom = QHBoxLayout()
         bottom.addWidget(self.status, 1)
+        bottom.addWidget(self.undo_btn)
         bottom.addWidget(self.load_btn)
 
         col = QVBoxLayout(self)
@@ -194,10 +204,8 @@ class SlicePanel(QWidget):
             pad = self.window._pads.get(i)
             if pad is not None and not pad.empty:
                 self.source_box.addItem(f"Pad {i + 1}  ·  {pad.name}", ("pad", i))
-        for take in self.window.takes:
-            self.source_box.addItem(f"Sample  ·  {take.label}", ("take", id(take)))
         if not self.source_box.count():
-            self.source_box.addItem("Nothing to slice yet", None)
+            self.source_box.addItem("No pads with a sample", None)
         index = self.source_box.findData(current)
         self.source_box.setCurrentIndex(max(0, index))
         self.source_box.blockSignals(False)
@@ -213,23 +221,14 @@ class SlicePanel(QWidget):
         data = self.source_box.itemData(index)
         if data is None:
             return
-        kind, key = data
-        if kind == "pad":
-            pad = self.window._pads.get(key)
-            if pad is None or pad.empty:
-                return
-            self.status.setText(f"Reading pad {key + 1}: the SEQTRAK plays it once…")
-            if not self.window.open_pad(pad, on_done=self._pad_captured):
-                self.status.setText("Couldn't play the pad. Is the SEQTRAK's USB audio "
-                                    "connected?")
-        else:
-            take = next((t for t in self.window.takes if id(t) == key), None)
-            if take is None:
-                return
-            left, right = self.window._render(take, enforce_limit=False)
-            pad = take.pad_index
-            self.set_source(Source(take.label, left, right, take.rate, pad,
-                                   take.device_offset + take.start))
+        _kind, key = data
+        pad = self.window._pads.get(key)
+        if pad is None or pad.empty:
+            return
+        self.status.setText(f"Reading pad {key + 1}: the SEQTRAK plays it once…")
+        if not self.window.open_pad(pad, on_done=self._pad_captured):
+            self.status.setText("Couldn't play the pad. Is the SEQTRAK's USB audio "
+                                "connected?")
 
     def _pad_captured(self, pad: sysex.SamplerPad, left, right, rate: int) -> None:
         if left is None:
@@ -320,51 +319,63 @@ class SlicePanel(QWidget):
             elif pad is None or pad.empty:
                 status, kind = "empty", "empty"
             else:
-                status, kind = f"replaces “{pad.name}”", "replace"
+                status, kind = f"was “{pad.name}”", "replace"
             tiles.append((f"{seconds:.2f} s", status, kind))
         self.pad_map.set_tiles(tiles)
 
         connected = self.window.device.state == dev.CONNECTED
-        too_long = has_source and \
-            (self._region()[1] - self._region()[0]) > audio.MAX_SECONDS * self.source.rate
-        self.load_btn.setText("Load to pad 1" if n <= 1 else f"Load to pads 1–{n}")
-        self.load_btn.setEnabled(has_source and connected and n >= 1 and not too_long)
-        if not connected:
-            self.load_btn.setToolTip("Connect the SEQTRAK first")
-        elif too_long:
-            self.load_btn.setToolTip(f"The SEQTRAK samples up to {audio.MAX_SECONDS:g} s; "
-                                     f"drag the handles in")
-        else:
-            self.load_btn.setToolTip("")
+        source_pad = self.window._pads.get(self.source.pad) if has_source else None
+        ready = source_pad is not None and source_pad.wave is not None
+        self.load_btn.setText("Apply to pad 1" if n <= 1 else f"Load to pads 1–{n}")
+        self.load_btn.setEnabled(has_source and connected and ready)
+        self.load_btn.setToolTip("" if connected else "Connect the SEQTRAK first")
+        self.undo_btn.setVisible(bool(self._last_load))
 
     def _load(self) -> None:
         segs = self.segments()
-        if self.source is None or not segs:
+        source_pad = self.window._pads.get(self.source.pad) if self.source else None
+        if source_pad is None or not segs:
             return
-        replaced = []
-        for i in range(len(segs)):
-            pad = self.window._pads.get(i)
-            if self.source.pad != i and pad is not None and not pad.empty:
-                replaced.append(f"pad {i + 1} (“{pad.name}”)")
-        if replaced:
+        taken = [f"pad {i + 1} (“{p.name}”)" for i in range(len(segs))
+                 if i != self.source.pad and (p := self.window._pads.get(i)) is not None
+                 and not p.empty]
+        if taken:
             answer = QMessageBox.question(
-                self, "Replace pads?",
-                "This replaces the recordings on " + ", ".join(replaced) + ". They can't "
-                "be brought back afterwards.\n\nContinue?")
+                self, "Use these pads?",
+                "This puts segments on " + ", ".join(taken) + " instead of their current "
+                "samples. Their samples stay on the SEQTRAK, so Undo brings them back.\n\n"
+                "Continue?")
             if answer != QMessageBox.Yes:
                 return
-        start, end = self._region()
-        left, right = self.source.left[start:end], self.source.right[start:end]
         name = self.source.name[:70]
-        jobs = []
-        for i, (a, b) in enumerate(segs):
-            trim_only = self.source.pad == i
-            jobs.append(Job(i, a - start, b - start, f"{name} {i + 1}", trim_only=trim_only,
-                            device_offset=self.source.device_offset + start))
-        SliceLoader(self.window, left, right, self.source.rate, jobs).exec()
-        self.window.device.request_pads()
-        self.source = None
-        self.wave.clear()
-        self.status.setText("Done. Click a pad in the list on the left to fine-tune it in "
-                            "Edit mode.")
+        changes = []
+        try:
+            for i, (a, b) in enumerate(segs):
+                start = self.source.device_offset + a
+                end = self.source.device_offset + b
+                label = f"{name} {i + 1}"
+                current = self.window._pads.get(i) or sysex.SamplerPad(i, "", 0, 0, False, 0)
+                if i == self.source.pad:
+                    msgs = sysex.trim_messages(current, start, end, source_pad.last_frame,
+                                               label)
+                else:
+                    msgs = sysex.slice_messages(i, source_pad, start, end, label)
+                changes.append((current, label, msgs))
+        except ValueError as e:
+            QMessageBox.warning(self, "Load to pads", str(e))
+            return
+        for current, label, msgs in changes:
+            self.window._push_history(current, label)
+            self.window.device.send_trim(msgs, current.pad)
+        self._last_load = [current.pad for current, _, _ in changes]
+        pads = "pad 1" if len(segs) == 1 else f"pads 1–{len(segs)}"
+        self.status.setText(f"✓  Loaded onto {pads}. Play them on the SEQTRAK; Undo puts "
+                            f"them back.")
+        self._refresh()
+
+    def _undo_load(self) -> None:
+        for pad in self._last_load:
+            self.window.undo_pad(pad)
+        self._last_load = []
+        self.status.setText("Pads put back the way they were.")
         self._refresh()

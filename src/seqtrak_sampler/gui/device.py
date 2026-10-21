@@ -48,7 +48,7 @@ class Device(QObject):
         self.state = UNAVAILABLE if self._rtmidi is None else DISCONNECTED
         self.version = ""
         self.pads: dict[int, sysex.SamplerPad] = {}
-        self._notes: dict[int, tuple[int, int]] = {}
+        self._osc: dict[int, sysex.PadOscillator] = {}
         self.log: deque[str] = deque(maxlen=LOG_SIZE)
         self._incoming.connect(self._handle)
 
@@ -139,7 +139,7 @@ class Device(QObject):
         self._identity_timer.stop()
         if self.pads:
             self.pads = {}
-            self._notes = {}
+            self._osc = {}
             self.padsChanged.emit([])
 
     # Messages
@@ -189,6 +189,13 @@ class Device(QObject):
             self.send(msg)
         QTimer.singleShot(200, lambda: self.send(sysex.pad_request(pad)))
 
+    def _with_osc(self, pad: sysex.SamplerPad) -> sysex.SamplerPad:
+        osc = self._osc.get(pad.pad)
+        if osc is None:
+            return pad
+        return replace(pad, note_low=osc.note_low, note_high=osc.note_high, wave=osc.wave,
+                       assigned=osc.assigned)
+
     def _handle(self, msg: list[int]) -> None:
         if not msg:
             return
@@ -212,14 +219,15 @@ class Device(QObject):
         if block is None:
             self.log.append(f"   ignored: {sysex.bulk_dump_problem(msg)}")
             return
-        notes = sysex.pad_notes_from_block(block)
-        if notes is not None:
-            index, low, high = notes
-            self._notes[index] = (low, high)
-            known = self.pads.get(index)
-            if known is not None and (known.note_low, known.note_high) != (low, high):
-                self.pads[index] = replace(known, note_low=low, note_high=high)
-                self.padsChanged.emit([self.pads[i] for i in sorted(self.pads)])
+        osc = sysex.pad_oscillator_from_block(block)
+        if osc is not None:
+            self._osc[osc.pad] = osc
+            known = self.pads.get(osc.pad)
+            if known is not None:
+                updated = self._with_osc(known)
+                if updated != known:
+                    self.pads[osc.pad] = updated
+                    self.padsChanged.emit([self.pads[i] for i in sorted(self.pads)])
             return
         try:
             pad = sysex.pad_from_block(block)
@@ -228,8 +236,7 @@ class Device(QObject):
             return
         if pad is None:
             return
-        if pad.pad in self._notes:
-            pad = replace(pad, note_low=self._notes[pad.pad][0], note_high=self._notes[pad.pad][1])
+        pad = self._with_osc(pad)
         if self.state != CONNECTED:
             # A bulk reply proves SysEx works even if the identity reply was missed.
             self._identity_timer.stop()
