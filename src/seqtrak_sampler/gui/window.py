@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import time
 from array import array
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
@@ -111,6 +112,13 @@ class MainWindow(QMainWindow):
         self.device = Device(self)
         self.recorder = Recorder(self)
         self._capture: sysex.SamplerPad | None = None  # pad being opened, if any
+        # Undo history per pad, keyed by the pad's sample name: its states before each
+        # Apply, oldest first. Kept in the settings so it survives restarts.
+        try:
+            self._history: dict[str, list[dict]] = json.loads(
+                self.settings.value("pad_history", "{}"))
+        except (TypeError, ValueError):
+            self._history = {}
 
         # Header
         logo = QLabel()
@@ -247,7 +255,13 @@ class MainWindow(QMainWindow):
                                    lambda: self._drag_file(self.current()))
         self.drag_btn.setToolTip("Drag this sample straight into the SEQTRAK app")
         self.send_btn = QPushButton("Apply to pad")
+        self.send_btn.setObjectName("primary")
         self.send_btn.clicked.connect(self._send_trim)
+        self.undo_btn = QPushButton("\u21b6  Undo")
+        self.undo_btn.clicked.connect(self._undo_trim)
+        self.reload_btn = QPushButton("\u27f3  Reload")
+        self.reload_btn.setToolTip("Read the pad from the SEQTRAK again and reopen it")
+        self.reload_btn.clicked.connect(self._reload_current)
 
         controls = QHBoxLayout()
         controls.setSpacing(8)
@@ -265,6 +279,8 @@ class MainWindow(QMainWindow):
         card_col.setSpacing(10)
         name_row = QHBoxLayout()
         name_row.addWidget(self.name_edit, 1)
+        name_row.addWidget(self.reload_btn)
+        name_row.addWidget(self.undo_btn)
         name_row.addWidget(self.send_btn)
         name_row.addWidget(self.drag_btn)
         card_col.addLayout(name_row)
@@ -465,14 +481,9 @@ class MainWindow(QMainWindow):
                 self._show_toast(f"Reloaded {path.name}")
 
     def _remove_current(self) -> None:
-        row = self.list.currentRow()
-        if row >= 0:
-            self.player.stop()
-            take = self.takes.pop(row)
-            if take in self._dirty:
-                self._dirty.remove(take)
-            self._refresh_pads()
-            self.list.takeItem(row)
+        take = self.current()
+        if take is not None:
+            self._remove_take(take)
 
     # Current take
 
@@ -856,6 +867,14 @@ class MainWindow(QMainWindow):
         pad = self._pad_for_take(take)
         self.send_btn.setVisible(connected and pad is not None)
         self.send_btn.setEnabled(pad is not None and take is not None and take.fits)
+        self.reload_btn.setVisible(connected and pad is not None)
+        self.undo_btn.setVisible(connected and pad is not None)
+        steps = len(self._history.get(pad.name, [])) if pad is not None else 0
+        self.undo_btn.setEnabled(steps > 0)
+        self.undo_btn.setToolTip(
+            f"Put pad {pad.pad + 1} back the way it was before the last Apply "
+            f"({steps} step{'s' if steps != 1 else ''} to undo)" if pad is not None and steps
+            else "Nothing to undo for this pad")
         if pad is not None:
             self.send_btn.setText(f"Apply to pad {pad.pad + 1}")
             self.send_btn.setToolTip("Set the pad's start and end points (and name) on the "
@@ -886,6 +905,7 @@ class MainWindow(QMainWindow):
             f"points change; the recorded audio stays as it is.")
         if answer != QMessageBox.Yes:
             return
+        self._push_history(pad, take.label if new_name else pad.name)
         self.device.send_trim(msgs, pad.pad)
         if new_name:
             take.device_name = sysex.decode_name(sysex.encode_name(new_name))
@@ -897,6 +917,65 @@ class MainWindow(QMainWindow):
             take.start, take.end = 0, len(take.left)
             self._show_take(self.list.currentRow())
         self._show_toast(f"\u2713  Applied to pad {pad.pad + 1}")
+
+    # Undo and reload
+
+    def _save_history(self) -> None:
+        self.settings.setValue("pad_history", json.dumps(self._history))
+
+    def _push_history(self, pad: sysex.SamplerPad, new_name: str) -> None:
+        """Remember the pad as it is now, filed under the name it will have."""
+        new_name = sysex.decode_name(sysex.encode_name(new_name))
+        stack = self._history.pop(pad.name, [])
+        stack.append(asdict(pad))
+        self._history[new_name] = stack[-50:]
+        self._save_history()
+
+    def _undo_trim(self) -> None:
+        take = self.current()
+        pad = self._pad_for_take(take)
+        stack = self._history.get(pad.name) if pad is not None else None
+        if not stack:
+            return
+        saved = sysex.SamplerPad(**stack.pop())
+        saved.pad = pad.pad
+        del self._history[pad.name]
+        if stack:
+            self._history[saved.name] = stack
+        self._save_history()
+        self.device.send_trim(sysex.restore_messages(pad, saved), pad.pad)
+        self._show_toast(f"\u21b6  Pad {pad.pad + 1} is back to how it was before the last "
+                         f"Apply")
+        self._reload_pad(pad.pad)
+
+    def _reload_current(self) -> None:
+        pad = self._pad_for_take(self.current())
+        if pad is not None:
+            self._reload_pad(pad.pad)
+
+    def _reload_pad(self, index: int) -> None:
+        """Read the pad from the SEQTRAK again, then reopen it (plays it once)."""
+        self.device.request_pads()
+        QTimer.singleShot(700, lambda: self._reopen_pad(index))
+
+    def _reopen_pad(self, index: int) -> None:
+        pad = self._pads.get(index)
+        if pad is None or pad.empty:
+            self._show_toast(f"Couldn't read pad {index + 1} from the SEQTRAK.", error=True)
+            return
+        stale = [t for t in self.takes if t.pad_index == index or self._matches(t, pad)]
+        for take in stale:
+            self._remove_take(take)
+        self.open_pad(pad)
+
+    def _remove_take(self, take: Take) -> None:
+        row = self.takes.index(take)
+        self.player.stop()
+        self.takes.pop(row)
+        if take in self._dirty:
+            self._dirty.remove(take)
+        self.list.takeItem(row)
+        self._refresh_pads()
 
     # Recording from the SEQTRAK's USB audio
 

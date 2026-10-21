@@ -50,6 +50,11 @@ comes alive:
   plays but not extend it past its current start or end, and the recording includes the
   pad's effects. The trim lines up with the device to within a few milliseconds.
   `.Y3S` files exported from a pad can be applied back to it the same way.
+- **Undo / Reload:** **Undo** puts the pad back the way it was before the last Apply,
+  one step at a time, back to how it was before the app first changed it (the history is
+  kept between launches). **Reload** reads the pad from the SEQTRAK again and reopens it,
+  e.g. after you've changed it on the device. Trimming never deletes audio: the pad keeps
+  its whole recording, so nothing is lost.
 
 Reading pads and applying trims uses MIDI System Exclusive messages from Yamaha's
 [SEQTRAK Data List](https://data.yamaha.com/files/download/other_assets/5/2226075/SEQTRAK_data_list_En_D0.pdf). Two things to know:

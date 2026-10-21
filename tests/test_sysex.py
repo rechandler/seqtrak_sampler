@@ -119,6 +119,19 @@ class SysexTests(unittest.TestCase):
         self.assertEqual(len(sysex.trim_messages(no_loop, 0, 1000, 511567, name="Old")), 2)
 
 
+class RestoreTests(unittest.TestCase):
+    def test_restore_points_loop_and_name(self):
+        now = sysex.SamplerPad(1, "Trimmed", 5000, 9999, True, 4000)
+        before = sysex.SamplerPad(1, "Original", 0, 88207, True, 88208)
+        msgs = sysex.restore_messages(now, before)
+        self.assertEqual(sysex.decode_point(msgs[0][9:13]), 0)
+        self.assertEqual(sysex.decode_point(msgs[1][9:13]), 88207)
+        self.assertEqual(msgs[2][6:9], [0x50, 0x1A, 0x60])
+        self.assertEqual(len(msgs), 3 + sysex.NAME_SIZE)
+        same = sysex.SamplerPad(1, "Original", 0, 88207, True, 88208)
+        self.assertEqual(len(sysex.restore_messages(same, before)), 2)
+
+
 class PadNoteTests(unittest.TestCase):
     def test_note_limits_from_oscillator_block(self):
         data = [0] * 109

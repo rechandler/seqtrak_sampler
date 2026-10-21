@@ -166,6 +166,33 @@ class DevicePanelTests(unittest.TestCase):
         w._send_trim()
         self.assertEqual(fake.pads[1]["start"], 45100)
 
+    def test_undo_restores_pad_and_reload_reopens_it(self):
+        from PySide6.QtWidgets import QMessageBox
+        fake = FakeSeqtrak()
+        fake.pads[1] = dict(name="Vox chop", start=1000, end=89199)
+        w = self.make_window(fake)
+        sound = array("h", [0] * 500 + [4000] * 88200 + [0] * 4000)
+        w._captured(w._pads[1], sound, array("h", sound), 44100)
+        take = w.current()
+        self.assertFalse(w.undo_btn.isEnabled())
+
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+        take.start, take.end = 44100, 66150
+        w._send_trim()
+        self.app.processEvents()
+        w.device.request_pads()          # what send_trim schedules, done right away
+        self.assertEqual(fake.pads[1]["start"], 45100)
+        self.assertTrue(w.undo_btn.isEnabled())
+
+        reopened = []
+        w.open_pad = lambda pad: reopened.append((pad.pad, pad.start, pad.end))
+        w._undo_trim()
+        self.assertEqual((fake.pads[1]["start"], fake.pads[1]["end"]), (1000, 89199))
+        self.assertFalse(w.undo_btn.isEnabled())
+        w._reopen_pad(1)                 # what the reload timer does
+        self.assertEqual(reopened, [(1, 1000, 89199)])
+        self.assertNotIn(take, w.takes)
+
     def test_note_messages_play_the_pad(self):
         fake = FakeSeqtrak()
         w = self.make_window(fake)

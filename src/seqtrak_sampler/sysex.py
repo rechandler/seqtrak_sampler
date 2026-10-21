@@ -272,6 +272,21 @@ def trim_messages(pad: SamplerPad, start: int, end_exclusive: int, last_frame: i
         msgs.append(parameter_change(sample_general_address(pad.pad, LOOP_LENGTH),
                                      encode_point(max(MIN_LOOP_LENGTH, length))))
     if name is not None and name != pad.name:
-        for i, b in enumerate(encode_name(name)):
-            msgs.append(parameter_change(sample_general_address(pad.pad, NAME_OFFSET + i), [b]))
+        msgs += name_messages(pad.pad, name)
+    return msgs
+
+
+def name_messages(pad: int, name: str) -> list[list[int]]:
+    return [parameter_change(sample_general_address(pad, NAME_OFFSET + i), [b])
+            for i, b in enumerate(encode_name(name))]
+
+
+def restore_messages(current: SamplerPad, saved: SamplerPad) -> list[list[int]]:
+    """Put a pad's start, end, loop length and name back to a saved state."""
+    msgs = points_messages(current.pad, saved.start, saved.end)
+    if saved.loop_length != current.loop_length:
+        msgs.append(parameter_change(sample_general_address(current.pad, LOOP_LENGTH),
+                                     encode_point(saved.loop_length)))
+    if saved.name != current.name:
+        msgs += name_messages(current.pad, saved.name)
     return msgs
