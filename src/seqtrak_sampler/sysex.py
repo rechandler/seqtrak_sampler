@@ -43,6 +43,15 @@ USB_SYSEX_TRANSMIT = (0x00, 0x00, 0x10)
 
 REALTIME_START, REALTIME_CONTINUE, REALTIME_STOP = 0xFA, 0xFB, 0xFC
 
+# AWM Sound Element "Oscillator / Amplitude / Pitch" block (p. 147), at 41 eA 00.
+# Note Limit Low/High give the note range that plays each sampler pad.
+OSCILLATOR_HI = 0x41
+NOTE_LIMIT_LOW = 0x10
+NOTE_LIMIT_HIGH = 0x11
+
+SAMPLER_CHANNEL = 10  # MIDI channel 11 (p. 2)
+MAX_FRAMES = int(16 * SAMPLE_RATE)
+
 
 def identity_request() -> list[int]:
     return [0xF0, 0x7E, 0x7F, 0x06, 0x01, 0xF7]
@@ -158,6 +167,13 @@ class SamplerPad:
     end: int          # last frame (inclusive); 0 means the pad is empty
     loop_on: bool
     loop_length: int
+    note_low: int | None = None   # from the oscillator block, once received
+    note_high: int | None = None
+
+    @property
+    def note(self) -> int | None:
+        """A note that plays this pad."""
+        return self.note_low
 
     @property
     def empty(self) -> bool:
@@ -179,6 +195,33 @@ def parse_sample_general(pad: int, data: list[int]) -> SamplerPad:
         loop_on=bool(data[LOOP_ON]),
         loop_length=decode_point(data[LOOP_LENGTH:LOOP_LENGTH + 4]),
     )
+
+
+def pad_notes_from_block(block: BulkBlock) -> tuple[int, int, int] | None:
+    """Return (pad, note_low, note_high) if this is a sampler pad's oscillator block."""
+    hi, mid, lo = block.address
+    if hi != OSCILLATOR_HI or lo != 0 or mid & 0x0F != SAMPLER_PART:
+        return None
+    pad = mid >> 4
+    if pad >= SAMPLER_PADS or len(block.data) <= NOTE_LIMIT_HIGH:
+        return None
+    return pad, block.data[NOTE_LIMIT_LOW], block.data[NOTE_LIMIT_HIGH]
+
+
+def note_on(note: int, velocity: int = 100) -> list[int]:
+    return [0x90 | SAMPLER_CHANNEL, note & 0x7F, velocity & 0x7F]
+
+
+def note_off(note: int) -> list[int]:
+    return [0x80 | SAMPLER_CHANNEL, note & 0x7F, 0]
+
+
+def points_messages(pad: int, start: int, end: int) -> list[list[int]]:
+    """Set a pad's start and (inclusive) end point exactly as given."""
+    return [
+        parameter_change(sample_general_address(pad, START_POINT), encode_point(start)),
+        parameter_change(sample_general_address(pad, END_POINT), encode_point(end)),
+    ]
 
 
 def pad_from_block(block: BulkBlock) -> SamplerPad | None:
@@ -206,10 +249,7 @@ def trim_messages(pad: SamplerPad, start: int, end_exclusive: int, last_frame: i
     end = end_point_for(end_exclusive, last_frame)
     if not 0 <= start < end:
         raise ValueError("selection is too short for the SEQTRAK")
-    msgs = [
-        parameter_change(sample_general_address(pad.pad, START_POINT), encode_point(start)),
-        parameter_change(sample_general_address(pad.pad, END_POINT), encode_point(end)),
-    ]
+    msgs = points_messages(pad.pad, start, end)
     length = end - start + 1
     if pad.loop_on and pad.loop_length > length:
         msgs.append(parameter_change(sample_general_address(pad.pad, LOOP_LENGTH),

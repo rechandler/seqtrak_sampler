@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from dataclasses import replace
+
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QGuiApplication
 
 from .. import sysex
 
@@ -42,6 +45,7 @@ class Device(QObject):
         self.state = UNAVAILABLE if self._rtmidi is None else DISCONNECTED
         self.version = ""
         self.pads: dict[int, sysex.SamplerPad] = {}
+        self._notes: dict[int, tuple[int, int]] = {}
         self._incoming.connect(self._handle)
 
         self._scan_timer = QTimer(self)
@@ -49,7 +53,7 @@ class Device(QObject):
         self._scan_timer.timeout.connect(self._scan)
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(PAD_POLL_MS)
-        self._poll_timer.timeout.connect(self.request_pads)
+        self._poll_timer.timeout.connect(self._poll)
         self._identity_timer = QTimer(self)
         self._identity_timer.setSingleShot(True)
         self._identity_timer.setInterval(IDENTITY_TIMEOUT_MS)
@@ -130,6 +134,7 @@ class Device(QObject):
         self._identity_timer.stop()
         if self.pads:
             self.pads = {}
+            self._notes = {}
             self.padsChanged.emit([])
 
     # Messages
@@ -146,6 +151,22 @@ class Device(QObject):
     def request_pads(self) -> None:
         for pad in range(sysex.SAMPLER_PADS):
             self.send(sysex.pad_request(pad))
+
+    def _poll(self) -> None:
+        # Only poll while this app is in front: in the background the user may be
+        # importing in the SEQTRAK app, and our requests could get in its way.
+        app = QGuiApplication.instance()
+        if app is None or app.applicationState() == Qt.ApplicationActive:
+            self.request_pads()
+
+    def play_note(self, note: int, seconds: float) -> None:
+        """Hold a sampler note for `seconds` (sampler pads default to gate mode)."""
+        self.send(sysex.note_on(note))
+        QTimer.singleShot(int(seconds * 1000), lambda: self.send(sysex.note_off(note)))
+
+    def set_points(self, pad: int, start: int, end: int) -> None:
+        for msg in sysex.points_messages(pad, start, end):
+            self.send(msg)
 
     def send_trim(self, msgs: list[list[int]], pad: int) -> None:
         for msg in msgs:
@@ -171,9 +192,22 @@ class Device(QObject):
                 self._set_state(CONNECTED, f"OS {version}")
             return
         block = sysex.parse_bulk_dump(msg)
-        pad = sysex.pad_from_block(block) if block else None
+        if block is None:
+            return
+        notes = sysex.pad_notes_from_block(block)
+        if notes is not None:
+            index, low, high = notes
+            self._notes[index] = (low, high)
+            known = self.pads.get(index)
+            if known is not None and (known.note_low, known.note_high) != (low, high):
+                self.pads[index] = replace(known, note_low=low, note_high=high)
+                self.padsChanged.emit([self.pads[i] for i in sorted(self.pads)])
+            return
+        pad = sysex.pad_from_block(block)
         if pad is None:
             return
+        if pad.pad in self._notes:
+            pad = replace(pad, note_low=self._notes[pad.pad][0], note_high=self._notes[pad.pad][1])
         if self.state != CONNECTED:
             # A bulk reply proves SysEx works even if the identity reply was missed.
             self._identity_timer.stop()
