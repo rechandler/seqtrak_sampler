@@ -41,6 +41,11 @@ DRAG_DIR = Path(tempfile.gettempdir()) / "seqtrak-sampler-drag"
 CAPTURE_LEAD_MS = 150     # recording runs this long before the pad is played
 CAPTURE_TAIL_MS = 400     # and this long after the note is released
 ONSET = audio.dbfs_to_amplitude(-50.0)
+# Time from sending a pad's note to its audio arriving in the recording. Measured on pads
+# whose sound starts right at their start point; this is the guess until then.
+DEFAULT_LATENCY_MS = 20
+LATENCY_SEARCH_MS = 150   # a sound starting this soon after the note is the pad's start
+LATENCY_WINDOW_MS = 40    # once measured, how far from it a start may be
 
 
 @dataclass
@@ -112,6 +117,11 @@ class MainWindow(QMainWindow):
         self.device = Device(self)
         self.recorder = Recorder(self)
         self._capture: sysex.SamplerPad | None = None  # pad being opened, if any
+        self._capture_note_frame = 0  # recording frame when the pad's note was sent
+        try:
+            self._latencies: list[int] = json.loads(self.settings.value("latencies", "[]"))
+        except (TypeError, ValueError):
+            self._latencies = []
         # Undo history per pad, keyed by the pad's sample name: its states before each
         # Apply, oldest first. Kept in the settings so it survives restarts.
         try:
@@ -841,19 +851,53 @@ class MainWindow(QMainWindow):
         self.player.stop()
         self._show_toast(f"Opening pad {pad.pad + 1}: playing it once\u2026")
         hold = pad.seconds + 0.05
-        QTimer.singleShot(CAPTURE_LEAD_MS, lambda: self.device.play_note(pad.note, hold))
+
+        def play() -> None:
+            self._capture_note_frame = self.recorder.frames_recorded()
+            self.device.play_note(pad.note, hold)
+
+        QTimer.singleShot(CAPTURE_LEAD_MS, play)
         QTimer.singleShot(int(CAPTURE_LEAD_MS + hold * 1000 + CAPTURE_TAIL_MS),
                           self.recorder.stop_take)
 
-    def _captured(self, pad: sysex.SamplerPad, left, right, rate: int) -> None:
-        # The pad's start point is where its sound begins in the recording.
-        onset = next((i for i in range(len(left))
+    def _latency(self, rate: int) -> int:
+        if not self._latencies:
+            return DEFAULT_LATENCY_MS * rate // 1000
+        return sorted(self._latencies)[len(self._latencies) // 2]
+
+    def _pad_start_in_recording(self, left, right, rate: int, note_frame: int) -> int:
+        """Where the pad's start point is in the recording.
+
+        The pad starts playing a short, fairly constant delay after its note is sent.
+        If sound begins within that delay window, it marks the start exactly (and
+        refines the delay); otherwise the pad starts with silence and the measured
+        delay is used.
+        """
+        expected = note_frame + self._latency(rate)
+        if self._latencies:
+            low = expected - LATENCY_WINDOW_MS * rate // 1000
+            high = expected + LATENCY_WINDOW_MS * rate // 1000
+        else:
+            low, high = note_frame, note_frame + LATENCY_SEARCH_MS * rate // 1000
+        low, high = max(0, low), min(len(left), high)
+        onset = next((i for i in range(low, high)
                       if abs(left[i]) > ONSET or abs(right[i]) > ONSET), None)
         if onset is None:
+            return min(expected, len(left))
+        self._latencies = (self._latencies + [onset - note_frame])[-15:]
+        self.settings.setValue("latencies", json.dumps(self._latencies))
+        return onset
+
+    def _captured(self, pad: sysex.SamplerPad, left, right, rate: int,
+                  note_frame: int | None = None) -> None:
+        if not any(abs(v) > ONSET for v in left) and not any(abs(v) > ONSET for v in right):
             self._show_toast(f"Pad {pad.pad + 1} played silence. Is the track muted, or "
                              f"its volume down?", error=True)
             return
-        left, right = left[onset:], right[onset:]
+        if note_frame is None:
+            note_frame = self._capture_note_frame
+        start = self._pad_start_in_recording(left, right, rate, note_frame)
+        left, right = left[start:], right[start:]
         length = min(len(left), pad.end - pad.start + 1)
         take = Take(None, pad.name, left, right, rate, 0, length, device_name=pad.name,
                     pad_index=pad.pad, device_offset=pad.start, device_max_end=pad.end)

@@ -109,6 +109,11 @@ class Recorder(QObject):
         elif not self._recording:
             self._close()
 
+    def frames_recorded(self) -> int:
+        """Frames in the current take so far, after reading any audio waiting."""
+        self._read()
+        return len(self._left)
+
     def start_take(self) -> None:
         if self._recording or not self._open():
             return

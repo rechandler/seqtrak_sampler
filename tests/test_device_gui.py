@@ -106,6 +106,8 @@ class DevicePanelTests(unittest.TestCase):
         self.addCleanup(setattr, dev.Device, "__init__", real)
         w = window.MainWindow()
         w.settings.clear()
+        w._latencies = []
+        w._history = {}
         w.settings.setValue("output_dir", tempfile.mkdtemp())
         self.addCleanup(w.close)
         return w
@@ -192,6 +194,35 @@ class DevicePanelTests(unittest.TestCase):
         w._reopen_pad(1)                 # what the reload timer does
         self.assertEqual(reopened, [(1, 1000, 89199)])
         self.assertNotIn(take, w.takes)
+
+    def test_leading_silence_is_kept_and_aligned(self):
+        from PySide6.QtWidgets import QMessageBox
+        fake = FakeSeqtrak()
+        fake.pads[1] = dict(name="Quiet start", start=0, end=132299)   # 3 s
+        fake.pads[2] = dict(name="Hit", start=0, end=44099)
+        w = self.make_window(fake)
+        delay = 900
+
+        # A pad whose sound starts right away teaches the app the delay.
+        note = 2000
+        hit = array("h", [0] * (note + delay) + [5000] * 44100 + [0] * 3000)
+        w._captured(w._pads[2], hit, array("h", hit), 44100, note_frame=note)
+        self.assertEqual(w._latencies, [delay])
+
+        # Pad 2 starts with 1 s of silence: it stays in view, lined up with the pad.
+        silence = 44100
+        quiet = array("h", [0] * (note + delay + silence) + [5000] * 88200 + [0] * 3000)
+        w._captured(w._pads[1], quiet, array("h", quiet), 44100, note_frame=note)
+        take = w.current()
+        self.assertEqual(take.end, 132300)
+        self.assertEqual(max(take.left[:silence]), 0)
+        self.assertEqual(take.left[silence], 5000)
+
+        # Trimming the silence moves the pad's start to where the sound begins.
+        take.start = silence
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+        w._send_trim()
+        self.assertEqual(fake.pads[1]["start"], silence)
 
     def test_note_messages_play_the_pad(self):
         fake = FakeSeqtrak()

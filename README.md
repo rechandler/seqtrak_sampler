@@ -48,7 +48,7 @@ comes alive:
   it, and it opens in the editor. Drag the handles, listen, then click **Apply to pad N**
   to set the pad's start and end points on the device. You can shorten what the pad
   plays but not extend it past its current start or end, and the recording includes the
-  pad's effects. The trim lines up with the device to within a few milliseconds.
+  pad's effects. Silence at the start of a pad is shown, so you can trim it away; the trim lines up with the device to within a few milliseconds.
   `.Y3S` files exported from a pad can be applied back to it the same way.
 - **Undo / Reload:** **Undo** puts the pad back the way it was before the last Apply,
   one step at a time, back to how it was before the app first changed it (the history is
