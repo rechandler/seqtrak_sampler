@@ -162,8 +162,11 @@ class Device(QObject):
         QTimer.singleShot(300, self.probe)
 
     def request_pads(self) -> None:
+        # Two documented ways to read the pads; whichever the SEQTRAK answers fills
+        # them in (repeats are harmless).
         for pad in range(sysex.SAMPLER_PADS):
             self.send(sysex.pad_request(pad))
+        self.send(sysex.sampler_sound_request())
 
     def _poll(self) -> None:
         # Only poll while this app is in front: in the background the user may be
@@ -207,7 +210,7 @@ class Device(QObject):
             return
         block = sysex.parse_bulk_dump(msg)
         if block is None:
-            self.log.append("   (not a bulk dump this app understands)")
+            self.log.append(f"   ignored: {sysex.bulk_dump_problem(msg)}")
             return
         notes = sysex.pad_notes_from_block(block)
         if notes is not None:
@@ -218,7 +221,11 @@ class Device(QObject):
                 self.pads[index] = replace(known, note_low=low, note_high=high)
                 self.padsChanged.emit([self.pads[i] for i in sorted(self.pads)])
             return
-        pad = sysex.pad_from_block(block)
+        try:
+            pad = sysex.pad_from_block(block)
+        except ValueError as e:
+            self.log.append(f"   ignored: {e} ({len(block.data)} data bytes)")
+            return
         if pad is None:
             return
         if pad.pad in self._notes:
