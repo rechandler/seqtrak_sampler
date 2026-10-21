@@ -24,9 +24,13 @@ PAD_READ_MS = 800    # time for the SEQTRAK to report the pad after sampling
 @dataclass
 class Job:
     pad: int                 # 0-6
-    start: int               # slice [start, end) in the rendered sample's frames
+    start: int               # slice [start, end) in the source's frames
     end: int
     name: str
+    # The pad already holds the source (it *is* the source pad): no sampling, just
+    # trim. device_offset is the pad's frame for source frame 0.
+    trim_only: bool = False
+    device_offset: int = 0
 
 
 class SliceLoader(QDialog):
@@ -64,18 +68,38 @@ class SliceLoader(QDialog):
         layout.addLayout(buttons)
         self._next_step = None
         self._playing = False
+        self._sampling = False
 
+        # The source pad only needs trimming; do that straight away.
+        for job in [j for j in jobs if j.trim_only]:
+            self._trim_in_place(job)
+        self.jobs = [j for j in jobs if not j.trim_only]
+        if not self.jobs:
+            self._finish()
+            return
         # REC SAMPLE should record what the app plays over USB.
         window.device.send(sysex.sampling_source(sysex.SOURCE_USB_AUDIO))
+        self._sampling = True
         self._arm()
+
+    def _trim_in_place(self, job: Job) -> None:
+        pad = self.window._pads.get(job.pad)
+        if pad is None or pad.empty:
+            return
+        start = job.device_offset + job.start
+        end = min(job.device_offset + job.end, pad.end + 1)
+        msgs = sysex.trim_messages(pad, start, end, pad.end, job.name)
+        self.window._push_history(pad, job.name)
+        self.window.device.send_trim(msgs, pad.pad)
+        self.loaded.append(job)
 
     # Steps
 
     def _step(self, text: str, action: str | None, next_step) -> None:
         job = self.jobs[self.index] if self.index < len(self.jobs) else None
         if job is not None:
-            self.progress.setText(f"SLICE {self.index + 1} OF {len(self.jobs)}  →  "
-                                  f"PAD {job.pad + 1}")
+            self.progress.setText(f"SAMPLING PAD {job.pad + 1}  \u00b7  {self.index + 1} OF "
+                                  f"{len(self.jobs)}")
         self.text.setText(text)
         self.action.setVisible(action is not None)
         self.action.setEnabled(action is not None)
@@ -145,7 +169,8 @@ class SliceLoader(QDialog):
         except ValueError as e:
             self._step(f"Couldn't trim pad {job.pad + 1}: {e}", "Try again", self._arm)
             return
-        self.window._push_history(pad, job.name)
+        # The pad now holds a new recording: its old undo steps don't apply to it.
+        self.window._forget_history(pad.name, job.name)
         self.window.device.send_trim(msgs, pad.pad)
         self.loaded.append(job)
         self.index += 1
@@ -156,7 +181,7 @@ class SliceLoader(QDialog):
 
     def _finish(self) -> None:
         self._restore_source()
-        pads = ", ".join(str(j.pad + 1) for j in self.loaded)
+        pads = ", ".join(str(j.pad + 1) for j in sorted(self.loaded, key=lambda j: j.pad))
         self.progress.setText("DONE")
         self._step(f"Loaded {len(self.loaded)} slice{'s' if len(self.loaded) != 1 else ''} "
                    f"onto pad{'s' if len(self.loaded) != 1 else ''} {pads}. Click a pad in "
@@ -165,7 +190,9 @@ class SliceLoader(QDialog):
 
     def _restore_source(self) -> None:
         # Back to the SEQTRAK's default sampling source (built-in mic / AUDIO IN).
-        self.window.device.send(sysex.sampling_source(sysex.SOURCE_MIC_LINE))
+        if self._sampling:
+            self.window.device.send(sysex.sampling_source(sysex.SOURCE_MIC_LINE))
+            self._sampling = False
 
     def reject(self) -> None:
         if self._playing:

@@ -206,17 +206,19 @@ class WaveformView(QWidget):
         font.setPixelSize(11)
         font.setWeight(QFont.DemiBold)
         p.setFont(font)
+        colors = theme.SEGMENT_COLORS
         for n, (a, b) in enumerate(zip(edges, edges[1:]), start=1):
             xa, xb = self._x(a), self._x(b)
-            if n % 2 == 0:
-                band = QColor(theme.ACCENT)
-                band.setAlpha(16)
-                p.fillRect(QRectF(xa, selection.top(), xb - xa, selection.height()), band)
+            color = QColor(colors[(n - 1) % len(colors)])
+            band = QColor(color)
+            band.setAlpha(26)
+            p.fillRect(QRectF(xa, selection.top(), xb - xa, selection.height()), band)
+            p.fillRect(QRectF(xa, selection.bottom() - 3, xb - xa, 3), color)
             label = QRectF(xa + 4, selection.top() + 4, 22, 16)
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(theme.SURFACE_3))
+            p.setBrush(color)
             p.drawRoundedRect(label, 4, 4)
-            p.setPen(QColor(theme.TEXT))
+            p.setPen(QColor("#111215"))
             p.drawText(label, Qt.AlignCenter, str(n))
         for m in inside:
             x = self._x(m)

@@ -22,20 +22,30 @@ in [FORMAT.md](FORMAT.md).
    (default `~/Music/SEQTRAK Samples`); **Show** opens it.
 5. Import the WAV into a synth track in the SEQTRAK app.
 
-### Slice a sample onto pads
+### Slice mode: one sample across several pads
 
-Turn on **✂ Slice**, then click the waveform to add cuts (drag to move, right-click to
-remove), or use **Auto-detect hits** or **Split into N equal slices**. Click
-**Load slices to pads…**, pick a pad for each slice (up to 7), and follow the steps:
+Switch the header from **Edit** to **✂ Slice**. Slice mode is separate from Edit mode, so
+trimming never writes to other pads by accident.
 
-1. On the SEQTRAK, select the SAMPLER track, press the pad, then press **REC SAMPLE**.
-2. Click **Play into SEQTRAK**. The app switches the SEQTRAK's sampling source to USB audio
-   and plays the whole sample into it.
-3. Press **REC SAMPLE** again to stop, then click **Next**.
+1. **Source:** pad 1 opens by default (the SEQTRAK plays it once). Pick another pad or a
+   loaded sample from **Source**, or click a pad in the sidebar.
+2. **Segments:** use **−/+** for equal segments, click the waveform to add cuts (drag to
+   move, right-click to remove), or **Auto-detect hits**. The handles set the overall
+   start and end.
+3. **Pad map:** segment N goes to pad N. Each pad tile shows its segment's length and
+   what happens to it: *source · trimmed*, *empty*, or *replaces "…"*. Pads after the
+   last segment are left alone. Click a tile to hear its segment.
+4. **Load to pads 1–N:** the source pad is just trimmed. Every other pad goes through a
+   short guided step: press the pad, then **REC SAMPLE**, click **Play into SEQTRAK**
+   (the app switches the SEQTRAK's sampling source to USB audio and plays the whole
+   sample into it), press **REC SAMPLE** to stop, click **Next**. The app plays the pad
+   back to find where the sample landed and trims it to its segment, named "Source 2",
+   "Source 3", …
 
-The app then plays the pad back once to find where the sample landed, and trims the pad
-to its slice. Every pad holds the whole sample, so you can widen a slice later. Undo puts
-a pad back. When it's done, the sampling source is set back to the built-in mic / AUDIO IN.
+Every pad keeps the whole sample, so you can widen a segment later in Edit mode. Undo
+works for the source pad. A pad that gets a new recording can't get its old one back, so
+the app asks before replacing any. When it's done, the sampling source is set back to
+the built-in mic / AUDIO IN.
 
 ### Faster round trips
 

@@ -18,6 +18,9 @@ ACCENT_HOVER = "#ff923f"
 ACCENT_PRESSED = "#e66a0f"
 OK = "#3ecf8e"
 DANGER = "#ff5c5c"
+# One colour per slice / pad in Slice mode.
+SEGMENT_COLORS = ["#ff7a1a", "#3ecf8e", "#5aa9ff", "#c77dff", "#ff5fa2", "#f4d03f",
+                  "#2ed3d3"]
 
 STYLESHEET = f"""
 * {{
@@ -122,6 +125,33 @@ QComboBox QAbstractItemView {{
     background: {SURFACE_2};
     border: 1px solid {BORDER};
     selection-background-color: {SURFACE_3};
+}}
+QPushButton#segLeft, QPushButton#segRight {{
+    background: {SURFACE_2};
+    color: {MUTED};
+    padding: 6px 16px;
+}}
+QPushButton#segLeft {{
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}}
+QPushButton#segRight {{
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left: none;
+}}
+QPushButton#segLeft:checked, QPushButton#segRight:checked {{
+    background: {SURFACE_3};
+    color: {TEXT};
+    border-color: {ACCENT};
+}}
+QLabel#panelTitle {{
+    font-size: 20px;
+    font-weight: 600;
+}}
+QLabel#segmentCount {{
+    font-size: 16px;
+    font-weight: 600;
 }}
 QPushButton#primary {{
     background: {ACCENT};

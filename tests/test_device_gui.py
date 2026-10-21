@@ -275,7 +275,68 @@ class DevicePanelTests(unittest.TestCase):
         self.assertEqual(loader.progress.text(), "DONE")
         source_changes = [m for m in fake.sent if m[6:9] == [0x00, 0x00, 0x19]]
         self.assertEqual(source_changes[-1][9], 0x01)                    # source restored
-        self.assertTrue(w._history.get("Loop 1"))
+        # Re-sampled pads hold new recordings: no stale undo steps for them.
+        self.assertNotIn("Loop 1", w._history)
+
+    def test_slice_mode_pad_map_and_jobs(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        from seqtrak_sampler.gui import slice_mode
+        fake = FakeSeqtrak()
+        fake.pads = {0: dict(name="Break", start=1000, end=300015),
+                     1: dict(name="Vox chop", start=0, end=88207)}
+        w = self.make_window(fake)
+        w.mode_group.button(1).click()
+        panel = w.slice_panel
+        self.assertEqual(w.stack.currentWidget(), panel)
+
+        sound = array("h", [3000] * 132300)
+        panel.set_source(slice_mode.Source("Break", sound, array("h", sound), 44100,
+                                           pad=0, device_offset=1000))
+        panel._split(3)
+        self.assertEqual(panel.count(), 3)
+        tiles = panel.pad_map._tiles
+        self.assertEqual([t[2] for t in tiles],
+                         ["source", "replace", "empty", "unused", "unused", "unused",
+                          "unused"])
+        self.assertEqual(panel.load_btn.text(), "Load to pads 1\u20133")
+        self.assertTrue(panel.load_btn.isEnabled())
+
+        captured = {}
+
+        class FakeLoader:
+            def __init__(self, window, left, right, rate, jobs):
+                captured["jobs"] = jobs
+
+            def exec(self):
+                return 0
+        original = slice_mode.SliceLoader
+        slice_mode.SliceLoader = FakeLoader
+        self.addCleanup(setattr, slice_mode, "SliceLoader", original)
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+        panel._load()
+        jobs = captured["jobs"]
+        self.assertEqual([(j.pad, j.trim_only, j.name) for j in jobs],
+                         [(0, True, "Break 1"), (1, False, "Break 2"),
+                          (2, False, "Break 3")])
+        self.assertEqual((jobs[1].start, jobs[1].end), (44100, 88200))
+        self.assertEqual(jobs[0].device_offset, 1000)
+
+    def test_loader_trims_source_pad_without_sampling(self):
+        from seqtrak_sampler.gui.loader import Job, SliceLoader
+        fake = FakeSeqtrak()
+        fake.pads = {0: dict(name="Break", start=1000, end=300015)}
+        w = self.make_window(fake)
+        sound = array("h", [3000] * 132300)
+        loader = SliceLoader(w, sound, array("h", sound), 44100,
+                             [Job(0, 0, 44100, "Break 1", trim_only=True,
+                                  device_offset=1000)])
+        w.device.request_pads()
+        self.assertEqual((fake.pads[0]["start"], w._pads[0].name), (1000, "Break 1"))
+        self.assertEqual(fake.pads[0]["end"], sysex.end_point_for(45100, 300015))
+        self.assertEqual(loader.progress.text(), "DONE")
+        self.assertFalse(any(m[6:9] == [0x00, 0x00, 0x19] for m in fake.sent))  # no sampling
+        self.assertIn("Break 1", w._history)       # trimming can be undone
 
     def test_note_messages_play_the_pad(self):
         fake = FakeSeqtrak()

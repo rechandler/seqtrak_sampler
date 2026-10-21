@@ -6,24 +6,24 @@ import json
 import tempfile
 import time
 from array import array
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+    QButtonGroup, QFileDialog, QHBoxLayout, QStackedWidget, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
-from .. import __version__, audio, slicing, sysex
+from .. import __version__, audio, sysex
 from ..files import FolderScanner, safe_filename, unique_path
 from ..y3s import read_y3s
 from . import device as dev
 from . import theme
 from .device import Device
-from .loader import Job, SliceLoader
 from .player import Player
+from .slice_mode import SlicePanel
 from .recorder import Recorder
 from .waveform import WaveformView
 from .widgets import (
@@ -65,7 +65,6 @@ class Take:
     pad_index: int | None = None
     device_offset: int = 0
     device_max_end: int | None = None
-    markers: list[int] = field(default_factory=list)  # slice cuts, in frames
 
     @property
     def label(self) -> str:
@@ -156,6 +155,24 @@ class MainWindow(QMainWindow):
         header.addSpacing(6)
         header.addWidget(subtitle)
         header.addStretch()
+        self.edit_mode_btn = QPushButton("Edit")
+        self.slice_mode_btn = QPushButton("\u2702  Slice")
+        self.mode_group = QButtonGroup(self)
+        for i, b in enumerate((self.edit_mode_btn, self.slice_mode_btn)):
+            b.setCheckable(True)
+            b.setObjectName("segLeft" if i == 0 else "segRight")
+            self.mode_group.addButton(b, i)
+        self.edit_mode_btn.setChecked(True)
+        self.edit_mode_btn.setToolTip("Trim, record and export samples; fine-tune a pad")
+        self.slice_mode_btn.setToolTip("Cut one sample into segments and load segment N "
+                                       "onto pad N")
+        self.mode_group.idClicked.connect(self._set_mode)
+        modes = QHBoxLayout()
+        modes.setSpacing(0)
+        modes.addWidget(self.edit_mode_btn)
+        modes.addWidget(self.slice_mode_btn)
+        header.addLayout(modes)
+        header.addSpacing(16)
         header.addWidget(self.watch_btn)
         header.addWidget(add_btn)
 
@@ -245,7 +262,6 @@ class MainWindow(QMainWindow):
         self.name_edit.textEdited.connect(self._rename)
         self.wave = WaveformView()
         self.wave.regionChanged.connect(self._region_changed)
-        self.wave.markersChanged.connect(self._markers_changed)
         self.player.position.connect(self.wave.set_playhead)
         self.player.stopped.connect(lambda: self.play_btn.setIcon(play_icon()))
         self.play_btn = QPushButton()
@@ -260,10 +276,6 @@ class MainWindow(QMainWindow):
         self.trim_btn.clicked.connect(self._auto_trim)
         self.cut_btn = QPushButton(f"Cut to {audio.MAX_SECONDS:g} s")
         self.cut_btn.clicked.connect(self._cut_to_limit)
-        self.slice_btn = QPushButton("\u2702  Slice")
-        self.slice_btn.setCheckable(True)
-        self.slice_btn.setToolTip("Cut the sample into slices and load them onto pads")
-        self.slice_btn.toggled.connect(self._slicing_toggled)
         self.normalize_box = Toggle(f"Normalize to {NORMALIZE_DB:g} dB")
         self.normalize_box.setChecked(self.settings.value("normalize", True, type=bool))
         self.normalize_box.toggled.connect(lambda on: self.settings.setValue("normalize", on))
@@ -287,7 +299,6 @@ class MainWindow(QMainWindow):
         controls.addSpacing(6)
         controls.addWidget(self.trim_btn)
         controls.addWidget(self.cut_btn)
-        controls.addWidget(self.slice_btn)
         controls.addSpacing(14)
         controls.addWidget(self.normalize_box)
         controls.addStretch()
@@ -304,7 +315,6 @@ class MainWindow(QMainWindow):
         name_row.addWidget(self.drag_btn)
         card_col.addLayout(name_row)
         card_col.addWidget(self.wave, 1)
-        card_col.addWidget(self._build_slice_bar())
         card_col.addLayout(controls)
         card = QWidget()
         card.setObjectName("card")
@@ -314,7 +324,11 @@ class MainWindow(QMainWindow):
         body = QHBoxLayout()
         body.setSpacing(16)
         body.addWidget(sidebar)
-        body.addWidget(card, 1)
+        self.slice_panel = SlicePanel(self)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(card)
+        self.stack.addWidget(self.slice_panel)
+        body.addWidget(self.stack, 1)
 
         # Footer: output folder and export
         save_to = QLabel("Save to")
@@ -393,6 +407,14 @@ class MainWindow(QMainWindow):
         self.device.stop()
         self.recorder.set_armed(False)
         super().closeEvent(event)
+
+    def _set_mode(self, mode: int) -> None:
+        self.player.stop()
+        self.stack.setCurrentIndex(mode)
+        for w in (self.auto_save_box, self.export_all_btn, self.export_btn):
+            w.setVisible(mode == 0)
+        if mode == 1:
+            self.slice_panel.activate()
 
     # Loading
 
@@ -515,7 +537,7 @@ class MainWindow(QMainWindow):
         self.player.stop()
         take = self.current()
         for w in (self.name_edit, self.trim_btn, self.play_btn, self.remove_btn,
-                  self.export_btn, self.drag_btn, self.slice_btn):
+                  self.export_btn, self.drag_btn):
             w.setEnabled(take is not None)
         self.export_all_btn.setEnabled(bool(self.takes))
         if take is None:
@@ -527,7 +549,6 @@ class MainWindow(QMainWindow):
             return
         self.name_edit.setText(take.name)
         self.wave.set_sound(take.left, take.right, take.rate, take.start, take.end)
-        self.wave.set_markers(take.markers)
         self._update_length()
 
     def _update_length(self) -> None:
@@ -540,7 +561,6 @@ class MainWindow(QMainWindow):
         self.export_btn.setEnabled(take.fits)
         self.drag_btn.setEnabled(take.fits)
         self._update_send_button()
-        self._update_slice_bar()
 
     def _rename(self, text: str) -> None:
         take = self.current()
@@ -758,6 +778,9 @@ class MainWindow(QMainWindow):
         self.device_label.setText(text)
         self.device_dot.setStyleSheet(f"background: {color}; border-radius: 4px;")
         self.enable_btn.setVisible(state == dev.SILENT)
+        panel = getattr(self, "slice_panel", None)
+        if panel is not None:
+            panel._refresh()
         self.log_btn.setVisible(state not in (dev.UNAVAILABLE, dev.DISCONNECTED))
         self.pads_list.setVisible(state == dev.CONNECTED)
         self._update_send_button()
@@ -826,6 +849,10 @@ class MainWindow(QMainWindow):
                 "in_app": f"Pad {i + 1}: open. Click to edit it.",
             }[state])
         self._update_send_button()
+        panel = getattr(self, "slice_panel", None)
+        if panel is not None:
+            panel.refresh_sources()
+            panel._refresh()
 
     def _pad_clicked(self, item: QListWidgetItem) -> None:
         row = self.pads_list.row(item)
@@ -836,6 +863,14 @@ class MainWindow(QMainWindow):
             return
         if pad.empty:
             self._show_toast(f"The SEQTRAK reports pad {row + 1} as empty.", error=True)
+            return
+        if self.stack.currentIndex() == 1:
+            # In Slice mode a pad click picks the source.
+            self.slice_panel.refresh_sources()
+            index = self.slice_panel.source_box.findData(("pad", row))
+            if index >= 0:
+                self.slice_panel.source_box.setCurrentIndex(index)
+                self.slice_panel._source_chosen(index)
             return
         take = self._take_for_pad(pad)
         if take is not None:
@@ -985,136 +1020,6 @@ class MainWindow(QMainWindow):
             self._show_take(self.list.currentRow())
         self._show_toast(f"\u2713  Applied to pad {pad.pad + 1}")
 
-    # Slicing
-
-    def _build_slice_bar(self) -> QWidget:
-        hint = QLabel("Click to cut \u00b7 drag to move \u00b7 right-click to remove")
-        hint.setObjectName("muted")
-        hint.setMinimumWidth(0)
-        auto_btn = QPushButton("Auto-detect hits")
-        auto_btn.clicked.connect(self._auto_slices)
-        self.split_box = QComboBox()
-        self.split_box.addItem("Split into\u2026")
-        for n in range(2, slicing.MAX_SLICES + 1):
-            self.split_box.addItem(f"{n} equal slices", n)
-        self.split_box.activated.connect(self._split_slices)
-        clear_btn = QPushButton("Clear")
-        clear_btn.setObjectName("ghost")
-        clear_btn.clicked.connect(lambda: self._set_markers([]))
-        self.load_btn = QPushButton("Load slices to pads\u2026")
-        self.load_btn.setObjectName("primary")
-        self.load_btn.clicked.connect(self._load_slices)
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)
-        row.addWidget(hint, 1)
-        row.addWidget(auto_btn)
-        row.addWidget(self.split_box)
-        row.addWidget(clear_btn)
-        row.addWidget(self.load_btn)
-        self.slice_bar = QWidget()
-        self.slice_bar.setLayout(row)
-        self.slice_bar.hide()
-        return self.slice_bar
-
-    def _slicing_toggled(self, on: bool) -> None:
-        self.wave.set_slicing(on)
-        self.slice_bar.setVisible(on)
-        self._update_slice_bar()
-
-    def _set_markers(self, markers: list[int]) -> None:
-        take = self.current()
-        if take is None:
-            return
-        take.markers = sorted(markers)
-        self.wave.set_markers(take.markers)
-        self._update_slice_bar()
-
-    def _markers_changed(self, markers: list) -> None:
-        take = self.current()
-        if take is not None:
-            take.markers = list(markers)
-        self._update_slice_bar()
-
-    def _slices(self, take: Take) -> list[tuple[int, int]]:
-        return slicing.slices(take.start, take.end, take.markers)
-
-    def _update_slice_bar(self) -> None:
-        take = self.current()
-        n = len(self._slices(take)) if take is not None else 0
-        self.load_btn.setText(f"Load {n} slice{'s' if n != 1 else ''} to pads\u2026")
-        self.load_btn.setEnabled(take is not None and 1 < n <= slicing.MAX_SLICES and take.fits)
-        self.load_btn.setToolTip(
-            "" if n <= slicing.MAX_SLICES else
-            f"The SEQTRAK has {slicing.MAX_SLICES} sampler pads; remove some cuts")
-
-    def _auto_slices(self) -> None:
-        take = self.current()
-        if take is not None:
-            self._set_markers(slicing.hit_markers(take.left, take.right, take.rate,
-                                                  take.start, take.end))
-            if not take.markers:
-                self._show_toast("No clear hits found. Click the waveform to add cuts.",
-                                 error=True)
-
-    def _split_slices(self, index: int) -> None:
-        count = self.split_box.itemData(index)
-        self.split_box.setCurrentIndex(0)
-        take = self.current()
-        if take is not None and count:
-            self._set_markers(slicing.equal_markers(take.start, take.end, count))
-
-    def _choose_pads(self, count: int) -> list[int] | None:
-        """Ask which pad each slice goes to. Returns pad indexes, or None if cancelled."""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Load slices to pads")
-        form = QFormLayout(dialog)
-        intro = QLabel("Each pad gets the whole sample, trimmed to its slice. Pads that "
-                       "already have a sample will be replaced.")
-        intro.setWordWrap(True)
-        form.addRow(intro)
-        boxes = []
-        for i in range(count):
-            box = QComboBox()
-            for p in range(sysex.SAMPLER_PADS):
-                pad = self._pads.get(p)
-                name = pad.name if pad is not None and not pad.empty else "empty"
-                box.addItem(f"Pad {p + 1}  \u00b7  {name}", p)
-            box.setCurrentIndex(i)
-            form.addRow(f"Slice {i + 1}", box)
-            boxes.append(box)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Start")
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        form.addRow(buttons)
-        if dialog.exec() != QDialog.Accepted:
-            return None
-        pads = [b.currentData() for b in boxes]
-        if len(set(pads)) != len(pads):
-            QMessageBox.warning(self, "Load slices", "Each slice needs its own pad.")
-            return None
-        return pads
-
-    def _load_slices(self) -> None:
-        take = self.current()
-        if take is None:
-            return
-        if self.device.state != dev.CONNECTED:
-            QMessageBox.warning(self, "Load slices", "Connect the SEQTRAK first (the panel "
-                                "on the left should say Connected).")
-            return
-        cuts = self._slices(take)
-        pads = self._choose_pads(len(cuts))
-        if pads is None:
-            return
-        left, right = self._render(take)
-        jobs = [Job(pad, a - take.start, b - take.start,
-                    f"{take.label[:70]} {n}")
-                for n, (pad, (a, b)) in enumerate(zip(pads, cuts), start=1)]
-        SliceLoader(self, left, right, take.rate, jobs).exec()
-        self.device.request_pads()
-
     # Undo and reload
 
     def _save_history(self) -> None:
@@ -1126,6 +1031,11 @@ class MainWindow(QMainWindow):
         stack = self._history.pop(pad.name, [])
         stack.append(asdict(pad))
         self._history[new_name] = stack[-50:]
+        self._save_history()
+
+    def _forget_history(self, *names: str) -> None:
+        for name in names:
+            self._history.pop(sysex.decode_name(sysex.encode_name(name)), None)
         self._save_history()
 
     def _undo_trim(self) -> None:
