@@ -42,14 +42,16 @@ comes alive:
   you press Stop. A short pre-roll keeps the first hit. No export step, and no 16-second
   limit while recording (you trim to 16 s afterwards).
 - **Sampler pads:** the 7 pads of the current project, with their names and lengths.
-  Green means the sample is loaded here; orange means it's on the device but not in the
-  app yet, so export it from the SEQTRAK app (with a watch folder it then loads itself).
-  The list refreshes every few seconds, so a new resample shows up on its own.
-- **Send trim to pad:** for a sample that came from a pad, sends your start/end points
-  (and new name) back to that pad on the SEQTRAK. Only the pad's settings change; the
-  recorded audio on the device stays as it is.
+  Green means the pad is open in the app; orange means it isn't yet. The list refreshes
+  every few seconds while the app is in front, so a new resample shows up on its own.
+- **Trim a pad:** click an orange pad. The SEQTRAK plays it once while the app records
+  it, and it opens in the editor. Drag the handles, listen, then click **Apply to pad N**
+  to set the pad's start and end points on the device. You can shorten what the pad
+  plays but not extend it past its current start or end, and the recording includes the
+  pad's effects. The trim lines up with the device to within a few milliseconds.
+  `.Y3S` files exported from a pad can be applied back to it the same way.
 
-Reading pads and sending trims uses MIDI System Exclusive messages from Yamaha's
+Reading pads and applying trims uses MIDI System Exclusive messages from Yamaha's
 [SEQTRAK Data List](https://data.yamaha.com/files/download/other_assets/5/2226075/SEQTRAK_data_list_En_D0.pdf). Two things to know:
 
 - The SEQTRAK answers SysEx only when its *USB MIDI Transmit System Exclusive* setting

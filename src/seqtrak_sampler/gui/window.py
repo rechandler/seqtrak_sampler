@@ -37,6 +37,9 @@ DEFAULT_OUTPUT = Path.home() / "Music" / "SEQTRAK Samples"
 WATCH_INTERVAL_MS = 1000
 AUTO_SAVE_DELAY_MS = 700
 DRAG_DIR = Path(tempfile.gettempdir()) / "seqtrak-sampler-drag"
+CAPTURE_LEAD_MS = 150     # recording runs this long before the pad is played
+CAPTURE_TAIL_MS = 400     # and this long after the note is released
+ONSET = audio.dbfs_to_amplitude(-50.0)
 
 
 @dataclass
@@ -50,6 +53,11 @@ class Take:
     end: int
     saved_path: Path | None = None  # the WAV we last wrote for this take
     device_name: str = ""  # the sample's name on the SEQTRAK, if it came from a pad
+    # Set when the take was captured by playing a pad: the pad it came from, the pad's
+    # frame at index 0 of this audio, and the furthest end point it may be given.
+    pad_index: int | None = None
+    device_offset: int = 0
+    device_max_end: int | None = None
 
     @property
     def label(self) -> str:
@@ -102,6 +110,7 @@ class MainWindow(QMainWindow):
         self._auto_save_timer.timeout.connect(self._flush_auto_save)
         self.device = Device(self)
         self.recorder = Recorder(self)
+        self._capture: sysex.SamplerPad | None = None  # pad being opened, if any
 
         # Header
         logo = QLabel()
@@ -227,7 +236,7 @@ class MainWindow(QMainWindow):
         self.drag_btn = DragButton("⠿  Drag WAV",
                                    lambda: self._drag_file(self.current()))
         self.drag_btn.setToolTip("Drag this sample straight into the SEQTRAK app")
-        self.send_btn = QPushButton("Send trim to pad")
+        self.send_btn = QPushButton("Apply to pad")
         self.send_btn.clicked.connect(self._send_trim)
 
         controls = QHBoxLayout()
@@ -714,15 +723,22 @@ class MainWindow(QMainWindow):
             return "empty"
         return "in_app" if self._take_for_pad(pad) else "new"
 
+    @staticmethod
+    def _matches(take: Take, pad: sysex.SamplerPad) -> bool:
+        if pad.empty:
+            return False
+        if take.pad_index is not None:
+            return take.pad_index == pad.pad and take.device_name == pad.name
+        return bool(take.device_name) and take.device_name == pad.name \
+            and pad.end <= take.last_frame
+
     def _take_for_pad(self, pad: sysex.SamplerPad) -> Take | None:
-        return next((t for t in self.takes if t.device_name and t.device_name == pad.name
-                     and pad.end <= t.last_frame), None)
+        return next((t for t in self.takes if self._matches(t, pad)), None)
 
     def _pad_for_take(self, take: Take | None) -> sysex.SamplerPad | None:
-        if take is None or not take.device_name or self.device.state != dev.CONNECTED:
+        if take is None or self.device.state != dev.CONNECTED:
             return None
-        return next((p for p in self._pads.values() if not p.empty
-                     and p.name == take.device_name and p.end <= take.last_frame), None)
+        return next((p for p in self._pads.values() if self._matches(take, p)), None)
 
     def _pads_changed(self, pads: list) -> None:
         previous = self._pads
@@ -732,7 +748,7 @@ class MainWindow(QMainWindow):
             if old is not None and old != pad and not pad.empty \
                     and self._take_for_pad(pad) is None:
                 self._show_toast(f"Pad {pad.pad + 1} has a new sample \u201c{pad.name}\u201d. "
-                                 f"Export it from the SEQTRAK app to edit it here.")
+                                 f"Click it in the pad list to open it.")
         self._refresh_pads()
 
     def _refresh_pads(self) -> None:
@@ -749,31 +765,72 @@ class MainWindow(QMainWindow):
             item.setData(ROLE_PAD_SECONDS, pad.seconds)
             item.setToolTip({
                 "empty": f"Pad {i + 1} is empty",
-                "new": f"Pad {i + 1}: not loaded here yet. Export it from the SEQTRAK app.",
-                "in_app": f"Pad {i + 1}: loaded. Click to edit it.",
+                "new": f"Pad {i + 1}: click to open it here. The SEQTRAK plays it once "
+                       f"while the app records it.",
+                "in_app": f"Pad {i + 1}: open. Click to edit it.",
             }[state])
         self._update_send_button()
 
     def _pad_clicked(self, item: QListWidgetItem) -> None:
         pad = self._pads.get(self.pads_list.row(item))
-        take = self._take_for_pad(pad) if pad else None
+        if pad is None or pad.empty:
+            return
+        take = self._take_for_pad(pad)
         if take is not None:
             self.list.setCurrentRow(self.takes.index(take))
+        else:
+            self.open_pad(pad)
+
+    # Opening a pad: play it once and record the SEQTRAK's USB audio.
+
+    def open_pad(self, pad: sysex.SamplerPad) -> None:
+        if self._capture is not None:
+            return
+        if pad.note is None:
+            self._show_toast("Still reading the pad's settings. Try again in a moment.",
+                             error=True)
+            return
+        if self.recorder.state == "recording":
+            self._show_toast("Stop the current recording first.", error=True)
+            return
+        self._capture = pad
+        self.recorder.start_take()
+        if self.recorder.state != "recording":  # no audio input: error already shown
+            self._capture = None
+            return
+        self.player.stop()
+        self._show_toast(f"Opening pad {pad.pad + 1}: playing it once\u2026")
+        hold = pad.seconds + 0.05
+        QTimer.singleShot(CAPTURE_LEAD_MS, lambda: self.device.play_note(pad.note, hold))
+        QTimer.singleShot(int(CAPTURE_LEAD_MS + hold * 1000 + CAPTURE_TAIL_MS),
+                          self.recorder.stop_take)
+
+    def _captured(self, pad: sysex.SamplerPad, left, right, rate: int) -> None:
+        # The pad's start point is where its sound begins in the recording.
+        onset = next((i for i in range(len(left))
+                      if abs(left[i]) > ONSET or abs(right[i]) > ONSET), None)
+        if onset is None:
+            self._show_toast(f"Pad {pad.pad + 1} played silence. Is the track muted, or "
+                             f"its volume down?", error=True)
+            return
+        left, right = left[onset:], right[onset:]
+        length = min(len(left), pad.end - pad.start + 1)
+        take = Take(None, pad.name, left, right, rate, 0, length, device_name=pad.name,
+                    pad_index=pad.pad, device_offset=pad.start, device_max_end=pad.end)
+        self._append_take(take)
+        self._show_toast(f"\u2713  Opened pad {pad.pad + 1}. Trim it, then Apply.")
 
     def _update_send_button(self) -> None:
         connected = self.device.state == dev.CONNECTED
         self.send_btn.setVisible(connected)
         take = self.current()
         pad = self._pad_for_take(take)
+        self.send_btn.setVisible(connected and pad is not None)
         self.send_btn.setEnabled(pad is not None and take is not None and take.fits)
         if pad is not None:
-            self.send_btn.setText(f"Send trim to pad {pad.pad + 1}")
-            self.send_btn.setToolTip("Set this pad's start and end points (and name) on the "
+            self.send_btn.setText(f"Apply to pad {pad.pad + 1}")
+            self.send_btn.setToolTip("Set the pad's start and end points (and name) on the "
                                      "SEQTRAK to match this selection")
-        else:
-            self.send_btn.setText("Send trim to pad")
-            self.send_btn.setToolTip("Only for samples exported from a pad that's in the "
-                                     "SEQTRAK's current project")
 
     def _send_trim(self) -> None:
         take = self.current()
@@ -781,24 +838,36 @@ class MainWindow(QMainWindow):
         if take is None or pad is None:
             return
         new_name = take.label if take.label != pad.name else None
+        offset = take.device_offset
+        last = take.last_frame + offset
+        if take.device_max_end is not None:
+            last = min(last, take.device_max_end)
         try:
-            msgs = sysex.trim_messages(pad, take.start, take.end, take.last_frame, new_name)
+            msgs = sysex.trim_messages(pad, take.start + offset, take.end + offset, last,
+                                       new_name)
         except ValueError as e:
-            QMessageBox.warning(self, "Can't send trim", str(e))
+            QMessageBox.warning(self, "Can't apply", str(e))
             return
         rename = f" and rename it to \u201c{new_name}\u201d" if new_name else ""
         answer = QMessageBox.question(
-            self, "Send trim to SEQTRAK?",
-            f"Set pad {pad.pad + 1} (\u201c{pad.name}\u201d) to play "
-            f"{take.start / take.rate:.2f} s to {take.end / take.rate:.2f} s{rename}?\n\n"
-            f"This edits the pad in the SEQTRAK's current project. Only the start and end "
+            self, "Apply to SEQTRAK?",
+            f"Trim pad {pad.pad + 1} (\u201c{pad.name}\u201d) to this "
+            f"{take.seconds:.2f} s selection{rename}?\n\n"
+            f"This edits the pad in the SEQTRAK's current project. Only its start and end "
             f"points change; the recorded audio stays as it is.")
         if answer != QMessageBox.Yes:
             return
         self.device.send_trim(msgs, pad.pad)
         if new_name:
             take.device_name = sysex.decode_name(sysex.encode_name(new_name))
-        self._show_toast(f"\u2713  Sent to pad {pad.pad + 1}")
+        if take.pad_index is not None:
+            # The selection is now the pad's playable region.
+            take.device_offset += take.start
+            take.device_max_end = min(last, sysex.end_point_for(take.end + offset, last))
+            take.left, take.right = take.left[take.start:take.end], take.right[take.start:take.end]
+            take.start, take.end = 0, len(take.left)
+            self._show_take(self.list.currentRow())
+        self._show_toast(f"\u2713  Applied to pad {pad.pad + 1}")
 
     # Recording from the SEQTRAK's USB audio
 
@@ -837,11 +906,16 @@ class MainWindow(QMainWindow):
             self.rec_status.setStyleSheet("")
 
     def _recorder_error(self, message: str) -> None:
+        self._capture = None
         self._show_toast(message, error=True)
         if self.follow_box.isChecked():
             self.follow_box.setChecked(False)
 
     def _recorded(self, left, right, rate: int) -> None:
+        if self._capture is not None:
+            pad, self._capture = self._capture, None
+            self._captured(pad, left, right, rate)
+            return
         take = Take(None, time.strftime("Take %H-%M-%S"), left, right, rate, 0, len(left))
         take.auto_trim()
         self._append_take(take)

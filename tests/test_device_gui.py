@@ -38,6 +38,8 @@ class FakeSeqtrak:
 
     def receive(self, msg):
         self.sent.append(msg)
+        if msg[0] != 0xF0:
+            return  # notes play sound on the real device; nothing to answer
         if msg == sysex.enable_usb_sysex_transmit():
             self.sysex_on = True
         elif msg == sysex.identity_request():
@@ -46,6 +48,9 @@ class FakeSeqtrak:
         elif msg[:9] == sysex.pad_request(msg[8])[:9] and len(msg) == 10:
             pad = msg[8]
             p = self.pads.get(pad, dict(name="", start=0, end=0))
+            osc = [0] * 109
+            osc[sysex.NOTE_LIMIT_LOW] = osc[sysex.NOTE_LIMIT_HIGH] = 60 + pad
+            self.reply(bulk_dump((sysex.OSCILLATOR_HI, (pad << 4) | 0x0A, 0x00), osc))
             self.reply(bulk_dump(sysex.sample_general_address(pad),
                                  sample_general(p["name"], p["start"], p["end"])))
         elif msg[2] == 0x10 and msg[6] == 0x50:
@@ -125,12 +130,48 @@ class DevicePanelTests(unittest.TestCase):
         self.assertEqual(take.device_name, "Resampling-5-1")
         self.assertEqual(w._pad_state(w._pads[0]), "in_app")
         self.assertTrue(w.send_btn.isEnabled())
-        self.assertEqual(w.send_btn.text(), "Send trim to pad 1")
+        self.assertEqual(w.send_btn.text(), "Apply to pad 1")
 
         QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
         w._send_trim()
         self.assertEqual(fake.pads[0]["start"], take.start)
         self.assertEqual(fake.pads[0]["end"], sysex.end_point_for(take.end, take.last_frame))
+
+    def test_open_pad_by_playing_it_then_apply_trim(self):
+        from PySide6.QtWidgets import QMessageBox
+        fake = FakeSeqtrak()
+        fake.pads[1] = dict(name="Vox chop", start=1000, end=89199)   # 88200 frames
+        w = self.make_window(fake)
+        pad = w._pads[1]
+        self.assertEqual(pad.note, 61)
+        self.assertEqual(w._pad_state(pad), "new")
+
+        # What the recorder would capture: a little latency, then the pad's sound.
+        lead = 3000
+        sound = array("h", [0] * lead + [4000] * 88200 + [0] * 8000)
+        w._captured(pad, sound, array("h", sound), 44100)
+        take = w.current()
+        self.assertEqual((take.pad_index, take.device_offset, take.end), (1, 1000, 88200))
+        self.assertEqual(w._pad_state(pad), "in_app")
+        self.assertEqual(w.send_btn.text(), "Apply to pad 2")
+
+        take.start, take.end = 44100, 66150      # keep 1.0 s - 1.5 s of the pad
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+        w._send_trim()
+        self.assertEqual(fake.pads[1]["start"], 1000 + 44100)
+        self.assertEqual(fake.pads[1]["end"], sysex.end_point_for(1000 + 66150, 89199))
+        self.assertEqual((take.start, take.device_offset), (0, 45100))
+
+        # Applying again without changes keeps the same points.
+        w._send_trim()
+        self.assertEqual(fake.pads[1]["start"], 45100)
+
+    def test_note_messages_play_the_pad(self):
+        fake = FakeSeqtrak()
+        w = self.make_window(fake)
+        w.device.play_note(60, 0.0)
+        self.app.processEvents()
+        self.assertIn([0x9A, 60, 100], fake.sent)
 
     def test_silent_device_can_be_enabled(self):
         fake = FakeSeqtrak(sysex_on=False)

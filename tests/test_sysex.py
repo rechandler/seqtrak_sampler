@@ -89,5 +89,19 @@ class SysexTests(unittest.TestCase):
         self.assertEqual(len(sysex.trim_messages(no_loop, 0, 1000, 511567, name="Old")), 2)
 
 
+class PadNoteTests(unittest.TestCase):
+    def test_note_limits_from_oscillator_block(self):
+        data = [0] * 109
+        data[0x10], data[0x11] = 60, 60
+        block = sysex.parse_bulk_dump(bulk_dump((0x41, 0x1A, 0x00), data))
+        self.assertEqual(sysex.pad_notes_from_block(block), (1, 60, 60))
+        synth = sysex.parse_bulk_dump(bulk_dump((0x41, 0x17, 0x00), data))
+        self.assertIsNone(sysex.pad_notes_from_block(synth))
+
+    def test_note_messages_use_channel_11(self):
+        self.assertEqual(sysex.note_on(60), [0x9A, 60, 100])
+        self.assertEqual(sysex.note_off(60), [0x8A, 60, 0])
+
+
 if __name__ == "__main__":
     unittest.main()
