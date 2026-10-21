@@ -18,6 +18,11 @@ except ImportError:  # the CI test job runs without the GUI extras
 
 from seqtrak_sampler import sysex
 
+try:
+    from PySide6.QtCore import QTimer
+except ImportError:
+    QTimer = None
+
 sys.path.insert(0, str(Path(__file__).parent))
 from test_sysex import bulk_dump, sample_general  # noqa: E402
 from test_y3s import make_y3s  # noqa: E402
@@ -56,7 +61,11 @@ class FakeSeqtrak:
         elif msg[2] == 0x10 and msg[6] == 0x50:
             pad, offset = msg[7] >> 4, msg[8]
             p = self.pads.setdefault(pad, dict(name="", start=0, end=0))
-            if offset == sysex.START_POINT:
+            if offset < sysex.NAME_SIZE:
+                packed = p.setdefault("packed_name", sysex.encode_name(p["name"]))
+                packed[offset] = msg[9]
+                p["name"] = sysex.decode_name(packed)
+            elif offset == sysex.START_POINT:
                 p["start"] = sysex.decode_point(msg[9:13])
             elif offset == sysex.END_POINT:
                 p["end"] = sysex.decode_point(msg[9:13])
@@ -223,6 +232,50 @@ class DevicePanelTests(unittest.TestCase):
         QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
         w._send_trim()
         self.assertEqual(fake.pads[1]["start"], silence)
+
+    def test_load_slices_to_pads(self):
+        from seqtrak_sampler.gui.loader import Job, SliceLoader
+        fake = FakeSeqtrak()
+        fake.pads = {}
+        w = self.make_window(fake)
+        rate = 44100
+        source = array("h", [0] * 441 + [6000] * 88200)          # 2 s of sound
+        jobs = [Job(2, 0, 44100, "Loop 1"), Job(4, 44100, len(source), "Loop 2")]
+        played = []
+
+        def fake_play(left, right, rate_, offset, to_seqtrak=False):
+            played.append((len(left), to_seqtrak))
+            QTimer.singleShot(0, w.player.stopped.emit)
+        w.player.play = fake_play
+
+        loader = SliceLoader(w, source, array("h", source), rate, jobs)
+        self.assertEqual(fake.sent[-1][6:10], [0x00, 0x00, 0x19, 0x02])   # USB Audio In
+
+        silence_before = 30000                      # what the SEQTRAK recorded first
+        for job in jobs:
+            loader._on_action()                     # Play into SEQTRAK
+            self.app.processEvents()
+            self.assertEqual(played[-1][1], True)
+            # The SEQTRAK sampled: its pad now holds silence + the whole source.
+            fake.pads[job.pad] = dict(name="Sample", start=0,  # fresh sample on the pad
+                                      end=silence_before + len(source) + 9999 | 0xF)
+            w.device.request_pads()
+            pad = w._pads[job.pad]
+            # Playing the pad back: its sound shows up after the recorded silence.
+            capture = array("h", [0] * (silence_before + 441) + [6000] * 88200)
+            loader._captured(pad, capture, array("h", capture), rate)
+            w.device.request_pads()
+
+        offset = silence_before + 441 - 441
+        self.assertEqual(fake.pads[2]["start"], offset)
+        self.assertEqual(fake.pads[4]["start"], offset + 44100)
+        self.assertEqual(fake.pads[4]["end"],
+                         sysex.end_point_for(offset + len(source), w._pads[4].last_frame))
+        self.assertEqual([w._pads[2].name, w._pads[4].name], ["Loop 1", "Loop 2"])
+        self.assertEqual(loader.progress.text(), "DONE")
+        source_changes = [m for m in fake.sent if m[6:9] == [0x00, 0x00, 0x19]]
+        self.assertEqual(source_changes[-1][9], 0x01)                    # source restored
+        self.assertTrue(w._history.get("Loop 1"))
 
     def test_note_messages_play_the_pad(self):
         fake = FakeSeqtrak()

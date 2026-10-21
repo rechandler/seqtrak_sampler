@@ -22,6 +22,21 @@ in [FORMAT.md](FORMAT.md).
    (default `~/Music/SEQTRAK Samples`); **Show** opens it.
 5. Import the WAV into a synth track in the SEQTRAK app.
 
+### Slice a sample onto pads
+
+Turn on **✂ Slice**, then click the waveform to add cuts (drag to move, right-click to
+remove), or use **Auto-detect hits** or **Split into N equal slices**. Click
+**Load slices to pads…**, pick a pad for each slice (up to 7), and follow the steps:
+
+1. On the SEQTRAK, select the SAMPLER track, press the pad, then press **REC SAMPLE**.
+2. Click **Play into SEQTRAK**. The app switches the SEQTRAK's sampling source to USB audio
+   and plays the whole sample into it.
+3. Press **REC SAMPLE** again to stop, then click **Next**.
+
+The app then plays the pad back once to find where the sample landed, and trims the pad
+to its slice. Every pad holds the whole sample, so you can widen a slice later. Undo puts
+a pad back. When it's done, the sampling source is set back to the built-in mic / AUDIO IN.
+
 ### Faster round trips
 
 - **Watch folder:** click **Watch folder…** and pick the folder you export `.Y3S` files

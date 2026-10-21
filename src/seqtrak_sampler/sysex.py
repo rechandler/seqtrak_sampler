@@ -41,6 +41,9 @@ MIN_LOOP_LENGTH = 0x50
 # System General (p. 122): "USB MIDI Transmit System Exclusive Message". It
 # defaults to Off, and while it is off the SEQTRAK answers no SysEx at all.
 USB_SYSEX_TRANSMIT = (0x00, 0x00, 0x10)
+# System General "Sampling Source" (p. 122): what REC SAMPLE records.
+SAMPLING_SOURCE = (0x00, 0x00, 0x19)
+SOURCE_RESAMPLING, SOURCE_MIC_LINE, SOURCE_USB_AUDIO = 0x00, 0x01, 0x02
 
 REALTIME_START, REALTIME_CONTINUE, REALTIME_STOP = 0xFA, 0xFB, 0xFC
 
@@ -79,6 +82,10 @@ def parameter_change(address: tuple[int, int, int], data: list[int],
 
 def enable_usb_sysex_transmit() -> list[int]:
     return parameter_change(USB_SYSEX_TRANSMIT, [0x01])
+
+
+def sampling_source(source: int) -> list[int]:
+    return parameter_change(SAMPLING_SOURCE, [source])
 
 
 def pad_request(pad: int) -> list[int]:
@@ -199,6 +206,14 @@ class SamplerPad:
     @property
     def seconds(self) -> float:
         return 0.0 if self.empty else (self.end - self.start + 1) / SAMPLE_RATE
+
+    @property
+    def last_frame(self) -> int:
+        """The recording's last frame. A real SEQTRAK reports it in Loop Length for a
+        one-shot pad (see FORMAT.md); otherwise the end point is the best we know."""
+        if not self.loop_on and self.loop_length >= self.end:
+            return self.loop_length
+        return self.end
 
 
 def parse_sample_general(pad: int, data: list[int]) -> SamplerPad:

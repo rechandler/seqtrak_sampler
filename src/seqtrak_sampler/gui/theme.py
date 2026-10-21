@@ -107,6 +107,22 @@ QPushButton:disabled {{
     background: {SURFACE};
     border-color: {SURFACE_2};
 }}
+QPushButton:checked {{
+    background: rgba(255, 122, 26, 0.16);
+    border-color: {ACCENT};
+    color: {ACCENT_HOVER};
+}}
+QComboBox {{
+    background: {SURFACE_2};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    padding: 6px 10px;
+}}
+QComboBox QAbstractItemView {{
+    background: {SURFACE_2};
+    border: 1px solid {BORDER};
+    selection-background-color: {SURFACE_3};
+}}
 QPushButton#primary {{
     background: {ACCENT};
     border: none;

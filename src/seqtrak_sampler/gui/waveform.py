@@ -30,6 +30,7 @@ def _peaks(frames: array, buckets: int) -> tuple[list[int], list[int]]:
 
 class WaveformView(QWidget):
     regionChanged = Signal(int, int)
+    markersChanged = Signal(object)  # list[int], in slice mode
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -43,8 +44,11 @@ class WaveformView(QWidget):
         self._start = 0
         self._end = 0
         self._playhead: int | None = None
-        self._dragging: str | None = None
+        self._dragging: str | None = None   # "start", "end" or "marker"
         self._hover: str | None = None
+        self._slicing = False
+        self._markers: list[int] = []
+        self._drag_marker: int | None = None  # index into _markers
 
     def set_sound(self, left: array, right: array, rate: int, start: int, end: int) -> None:
         self._channels = [_peaks(left, PEAK_BUCKETS), _peaks(right, PEAK_BUCKETS)]
@@ -64,6 +68,17 @@ class WaveformView(QWidget):
     def set_region(self, start: int, end: int) -> None:
         self._start, self._end = start, end
         self.update()
+
+    def set_slicing(self, on: bool) -> None:
+        self._slicing = on
+        self.update()
+
+    def set_markers(self, markers: list[int]) -> None:
+        self._markers = sorted(markers)
+        self.update()
+
+    def markers(self) -> list[int]:
+        return list(self._markers)
 
     def set_playhead(self, frame: int | None) -> None:
         self._playhead = frame
@@ -174,6 +189,8 @@ class WaveformView(QWidget):
             p.drawText(QRectF(area.left() + 4, lane.top() + 2, 20, 14), Qt.AlignLeft, name)
 
         self._paint_ruler(p, area)
+        if self._slicing:
+            self._paint_slices(p, selection)
         for which, x in (("start", sx), ("end", ex)):
             self._paint_handle(p, x, selection, which)
 
@@ -181,6 +198,35 @@ class WaveformView(QWidget):
             px = self._x(self._playhead)
             p.setPen(QPen(QColor(theme.ACCENT), 2))
             p.drawLine(QPointF(px, selection.top()), QPointF(px, selection.bottom()))
+
+    def _paint_slices(self, p: QPainter, selection: QRectF) -> None:
+        inside = [m for m in self._markers if self._start < m < self._end]
+        edges = [self._start, *inside, self._end]
+        font = QFont(self.font())
+        font.setPixelSize(11)
+        font.setWeight(QFont.DemiBold)
+        p.setFont(font)
+        for n, (a, b) in enumerate(zip(edges, edges[1:]), start=1):
+            xa, xb = self._x(a), self._x(b)
+            if n % 2 == 0:
+                band = QColor(theme.ACCENT)
+                band.setAlpha(16)
+                p.fillRect(QRectF(xa, selection.top(), xb - xa, selection.height()), band)
+            label = QRectF(xa + 4, selection.top() + 4, 22, 16)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(theme.SURFACE_3))
+            p.drawRoundedRect(label, 4, 4)
+            p.setPen(QColor(theme.TEXT))
+            p.drawText(label, Qt.AlignCenter, str(n))
+        for m in inside:
+            x = self._x(m)
+            p.setPen(QPen(QColor(theme.ACCENT_HOVER), 1.5, Qt.DashLine))
+            p.drawLine(QPointF(x, selection.top()), QPointF(x, selection.bottom()))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(theme.ACCENT_HOVER))
+            p.drawPolygon(QPolygonF([QPointF(x - 5, selection.bottom()),
+                                     QPointF(x + 5, selection.bottom()),
+                                     QPointF(x, selection.bottom() - 7)]))
 
     def _paint_empty(self, p: QPainter, bg: QRectF) -> None:
         box = bg.adjusted(18, 18, -18, -18)
@@ -239,14 +285,52 @@ class WaveformView(QWidget):
             return None
         return "start" if ds <= de else "end"
 
+    def _marker_at(self, x: float) -> int | None:
+        best = None
+        for i, m in enumerate(self._markers):
+            d = abs(x - self._x(m))
+            if d <= HANDLE_GRAB_PX and (best is None or d < best[0]):
+                best = (d, i)
+        return None if best is None else best[1]
+
     def mousePressEvent(self, event):
-        if self._channels and event.button() == Qt.LeftButton:
-            self._dragging = self._handle_at(event.position().x())
+        if not self._channels:
+            return
+        x = event.position().x()
+        if event.button() == Qt.RightButton and self._slicing:
+            i = self._marker_at(x)
+            if i is not None:
+                del self._markers[i]
+                self.update()
+                self.markersChanged.emit(self.markers())
+            return
+        if event.button() != Qt.LeftButton:
+            return
+        self._dragging = self._handle_at(x)
+        if self._dragging is None and self._slicing:
+            i = self._marker_at(x)
+            if i is None:
+                frame = self._frame(x)
+                if not self._start < frame < self._end:
+                    return
+                self._markers.append(frame)
+                self._markers.sort()
+                i = self._markers.index(frame)
+                self.markersChanged.emit(self.markers())
+            self._dragging, self._drag_marker = "marker", i
+            self.update()
 
     def mouseMoveEvent(self, event):
         x = event.position().x()
+        if self._dragging == "marker":
+            frame = min(max(self._frame(x), self._start + 1), self._end - 1)
+            self._markers[self._drag_marker] = frame
+            self.update()
+            return
         if self._dragging is None:
             hover = self._handle_at(x) if self._channels else None
+            if hover is None and self._slicing and self._marker_at(x) is not None:
+                hover = "marker"
             if hover != self._hover:
                 self._hover = hover
                 self.setCursor(Qt.SizeHorCursor if hover else Qt.ArrowCursor)
@@ -261,7 +345,11 @@ class WaveformView(QWidget):
         self.regionChanged.emit(self._start, self._end)
 
     def mouseReleaseEvent(self, event):
+        if self._dragging == "marker":
+            self._markers.sort()
+            self.markersChanged.emit(self.markers())
         self._dragging = None
+        self._drag_marker = None
         self.update()
 
     def leaveEvent(self, event):
