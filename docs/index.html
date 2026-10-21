@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SEQTRAK Sampler</title>
-<meta name="description" content="A free companion app for the Yamaha SEQTRAK that turns resampled .Y3S sounds into trimmed, synth-ready stereo WAV files.">
+<meta name="description" content="A free companion app for the Yamaha SEQTRAK: record it over USB, trim sampler pads right on the device, slice one sample across pads, and export synth-ready stereo WAVs.">
 <meta property="og:title" content="SEQTRAK Sampler">
-<meta property="og:description" content="Turn SEQTRAK resamples into synth-ready WAVs. No DAW round trip.">
+<meta property="og:description" content="Record, trim and slice SEQTRAK samples without a DAW round trip.">
 <meta property="og:image" content="screenshot.png">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23ff7a1a'/%3E%3C/svg%3E">
 <style>
@@ -114,10 +114,20 @@
   details[open] summary::after { content: "–"; }
   details p { color: var(--muted); margin: 0 0 18px; }
 
+  .showcase { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 48px; align-items: center; }
+  .showcase .shot { margin: 0; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); }
+  .steps { list-style: none; margin: 0 0 20px; padding: 0; counter-reset: s; }
+  .steps li { position: relative; padding: 6px 0 6px 36px; counter-increment: s; }
+  .steps li::before { content: counter(s); position: absolute; left: 0; top: 8px; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 650; background: var(--accent); color: #1a0d03; }
+  .steps li span { color: var(--muted); display: block; font-size: 15px; }
+  .note { color: var(--muted); font-size: 15px; margin: 0; }
+  .tag { display: inline-block; font-size: 11px; font-weight: 650; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ok); border: 1px solid rgba(62, 207, 142, 0.4); border-radius: 999px; padding: 1px 8px; margin-left: 8px; vertical-align: 2px; }
+
   footer { border-top: 1px solid var(--border); padding: 40px 0 56px; color: var(--faint); font-size: 14px; }
   footer .wrap { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
 
   @media (max-width: 860px) {
+    .showcase { grid-template-columns: minmax(0, 1fr); gap: 32px; }
     .features { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .downloads { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .dl.source { grid-column: 1 / -1; }
@@ -126,7 +136,7 @@
     .wrap { padding: 0 16px; }
     nav .links a:not(.gh) { display: none; }
     .hero { padding-top: 56px; }
-    .compare, .features, .downloads { grid-template-columns: minmax(0, 1fr); }
+    .compare, .features, .downloads, .showcase { grid-template-columns: minmax(0, 1fr); }
     section { padding: 64px 0; }
     .btn { width: 100%; justify-content: center; }
     .dl .btn { align-self: stretch; }
@@ -140,6 +150,7 @@
     <a class="logo" href="#">SEQTRAK Sampler</a>
     <div class="links">
       <a href="#how">How it works</a>
+      <a href="#slice">Slice mode</a>
       <a href="#features">Features</a>
       <a href="#download">Download</a>
       <a href="#faq">FAQ</a>
@@ -150,9 +161,9 @@
 
 <header class="hero">
   <div class="wrap">
-    <span class="eyebrow">Free &amp; open source · macOS &amp; Windows</span>
-    <h1>Turn SEQTRAK resamples into <em>synth&#8209;ready</em> WAVs</h1>
-    <p class="lede">Drop in the .Y3S files the SEQTRAK app exports, trim them by eye and ear, and get clean stereo WAVs you can load straight into a synth track. No DAW round trip.</p>
+    <span class="eyebrow">Free &amp; open source · macOS &amp; Windows · v0.6</span>
+    <h1>Sampling on the SEQTRAK, <em>without the DAW</em></h1>
+    <p class="lede">Record the SEQTRAK over USB, trim its sampler pads right on the device, slice one sample across several pads in a click, and export clean stereo WAVs for its synth tracks.</p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/rechandler/seqtrak_sampler/releases/latest/download/SEQTRAK-Sampler-macOS.zip">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.37 12.6c-.02-2.3 1.88-3.4 1.96-3.46-1.07-1.56-2.73-1.78-3.32-1.8-1.41-.14-2.76.83-3.47.83-.72 0-1.82-.81-2.99-.79-1.54.02-2.96.9-3.75 2.27-1.6 2.78-.41 6.89 1.15 9.14.76 1.1 1.67 2.34 2.86 2.3 1.15-.05 1.58-.74 2.97-.74 1.38 0 1.77.74 2.98.72 1.23-.02 2.01-1.12 2.76-2.23.87-1.28 1.23-2.52 1.25-2.58-.03-.01-2.38-.92-2.4-3.66zM14.1 5.86c.63-.77 1.06-1.83.94-2.89-.91.04-2.02.61-2.67 1.37-.58.67-1.1 1.76-.96 2.8 1.02.08 2.06-.52 2.69-1.28z"/></svg>
@@ -165,7 +176,7 @@
     </div>
     <p class="fineprint">Not affiliated with or endorsed by Yamaha Corporation.</p>
     <div class="shot">
-      <img src="screenshot.png" width="1040" height="560" alt="SEQTRAK Sampler showing a resampled sound with trim handles, a play button, a normalize switch and a 7.56 of 16 second length meter">
+      <img src="screenshot.png" width="1180" height="680" alt="SEQTRAK Sampler connected to a SEQTRAK: the sampler pads in the sidebar, pad 2 open with trim handles, and Reload, Undo and Apply to pad 2 buttons">
     </div>
   </div>
 </header>
@@ -173,8 +184,8 @@
 <section id="how">
   <div class="wrap">
     <div class="kicker">The problem</div>
-    <h2>Your resamples are stuck in .Y3S files</h2>
-    <p class="section-lede">The SEQTRAK can resample itself, but the result can only live on the sampler track. Getting it onto a synth engine meant re-recording it somewhere else.</p>
+    <h2>Sampling on the SEQTRAK means a lot of round trips</h2>
+    <p class="section-lede">Trimming a pad by ear is fiddly, a sample can only live on one pad, and getting a resample onto a synth engine meant re-recording it in a DAW.</p>
     <div class="compare">
       <div class="panel">
         <h3><span class="dot" style="background: var(--danger)"></span>Before</h3>
@@ -183,18 +194,38 @@
           <li><span class="strike">Open a DAW and set up the SEQTRAK as an input</span></li>
           <li><span class="strike">Play the sample back and record it again</span></li>
           <li><span class="strike">Trim, normalize and export a WAV by hand</span></li>
-          <li>Import the WAV into a synth track</li>
+          <li><span class="strike">Re-sample each slice you want on another pad</span></li>
         </ol>
       </div>
       <div class="panel good">
         <h3><span class="dot" style="background: var(--accent)"></span>With SEQTRAK Sampler</h3>
         <ol class="flow">
-          <li>Resample on the SEQTRAK</li>
-          <li>Export the sound from the SEQTRAK app's Sound Manager</li>
-          <li>Drag the .Y3S into SEQTRAK Sampler. Silence is trimmed for you.</li>
-          <li>Click <strong>Export WAV</strong></li>
-          <li>Import the WAV into a synth track</li>
+          <li>Resample on the SEQTRAK. Its pad shows up in the app on its own.</li>
+          <li>Click the pad. The SEQTRAK plays it and it opens in the editor.</li>
+          <li>Drag the handles and click <strong>Apply to pad</strong>, or switch to <strong>Slice</strong> to spread it across pads</li>
+          <li>Need it on a synth track? <strong>Export WAV</strong> or drag it into the SEQTRAK app</li>
         </ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="slice">
+  <div class="wrap">
+    <div class="showcase">
+      <div>
+        <div class="kicker">Slice mode <span class="tag">New</span></div>
+        <h2>One sample, up to seven pads</h2>
+        <p class="section-lede" style="margin-bottom: 24px">Cut a break into hits or a phrase into chops, and every piece lands on its own pad, trimmed and ready to play.</p>
+        <ol class="steps">
+          <li>Pick a source pad<span>Pad 1 by default. The SEQTRAK plays it once so you can see it.</span></li>
+          <li>Set the segments<span>Use −/+ for equal parts, click to add cuts, or auto-detect the hits.</span></li>
+          <li>Click Load to pads<span>Segment N goes to pad N. Nothing is re-recorded: each pad plays the same recording, trimmed to its segment.</span></li>
+        </ol>
+        <p class="note">The pad map shows what each pad will hold before anything changes, and <strong>Undo</strong> puts every pad back, including ones that had other samples.</p>
+      </div>
+      <div class="shot">
+        <img src="slice.png" width="1180" height="680" loading="lazy" alt="Slice mode: a drum break split into four colored segments, with a pad map showing pad 1 trimmed, pads 2 and 3 replacing Vox chop and Bass stab, and pad 4 empty">
       </div>
     </div>
   </div>
@@ -203,38 +234,53 @@
 <section id="features">
   <div class="wrap">
     <div class="kicker">Features</div>
-    <h2>Built for one job, done well</h2>
-    <p class="section-lede">The audio comes straight out of the SEQTRAK's own file. Nothing is re-recorded, so the WAV is a bit-for-bit copy of what the hardware captured.</p>
+    <h2>Everything between the SEQTRAK and a finished sample</h2>
+    <p class="section-lede">Plug the SEQTRAK in over USB and the app reads its sampler pads, plays them, and writes trims back using Yamaha's documented MIDI messages.</p>
     <div class="features">
       <div class="feature">
-        <div class="icon"><svg viewBox="0 0 24 24"><path d="M2 12h2M6 8v8M10 4v16M14 7v10M18 10v4M22 12h0"/></svg></div>
-        <h3>Lossless extraction</h3>
-        <p>Reads the 16-bit, 44.1 kHz audio inside the .Y3S directly, with no resampling and no generation loss.</p>
+        <div class="icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>
+        <h3>Live pad list</h3>
+        <p>The project's seven sampler pads with names and lengths. A new resample appears on its own while the app is in front.</p>
       </div>
       <div class="feature">
         <div class="icon"><svg viewBox="0 0 24 24"><path d="M6 3v18M18 3v18M6 12h12"/></svg></div>
-        <h3>Visual trimming</h3>
-        <p>Silence is cut automatically. Drag the start and end handles on the stereo waveform to fine-tune.</p>
+        <h3>Trim pads on the device</h3>
+        <p>Click a pad, drag the handles, click Apply. The pad's start and end change on the SEQTRAK, lined up to within a few milliseconds.</p>
       </div>
       <div class="feature">
-        <div class="icon"><svg viewBox="0 0 24 24"><polygon points="7 4 20 12 7 20 7 4"/></svg></div>
-        <h3>Hear before you export</h3>
-        <p>Press Play or Space to hear exactly the region that will be saved, normalized and faded.</p>
+        <div class="icon"><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg></div>
+        <h3>Undo &amp; Reload</h3>
+        <p>Step a pad back to how it was, as far as before the app first touched it. Trimming never deletes audio, and the history survives restarts.</p>
+      </div>
+      <div class="feature">
+        <div class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg></div>
+        <h3>Record over USB</h3>
+        <p>Capture the SEQTRAK's USB audio straight into the app. Rec on Play starts and stops with the SEQTRAK's transport.</p>
+      </div>
+      <div class="feature">
+        <div class="icon"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div>
+        <h3>Watch folder &amp; auto-save</h3>
+        <p>.Y3S exports from the SEQTRAK app load as soon as they land, and every edit can be saved as a WAV right away.</p>
+      </div>
+      <div class="feature">
+        <div class="icon"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></div>
+        <h3>Drag out to import</h3>
+        <p>Drag a sample from the list straight onto the SEQTRAK app's import to put it on a synth track. No file dialogs.</p>
       </div>
       <div class="feature">
         <div class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
         <h3>16-second guard</h3>
-        <p>A meter shows the selection against the SEQTRAK's limit. Over-long sounds are flagged before they fail on import.</p>
+        <p>A meter shows the selection against the SEQTRAK's limit. Cut to 16 s trims it with a fade before it fails on import.</p>
       </div>
       <div class="feature">
         <div class="icon"><svg viewBox="0 0 24 24"><path d="M4 9h3l5-4v14l-5-4H4z"/><path d="M16 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12"/></svg></div>
-        <h3>Normalize &amp; de-click</h3>
-        <p>Optional peak normalization to -1 dB, and short fades wherever a handle cuts through sound.</p>
+        <h3>Clean stereo WAVs</h3>
+        <p>44.1 kHz, 16-bit stereo, read losslessly from .Y3S files. Optional normalize to -1 dB and short fades so edges don't click.</p>
       </div>
       <div class="feature">
-        <div class="icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/></svg></div>
-        <h3>Batch &amp; command line</h3>
-        <p>Load a whole session and export all at once, or script it with the bundled <code>y3s2wav</code> tool.</p>
+        <div class="icon"><svg viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><path d="M12 19h8"/></svg></div>
+        <h3>Command line too</h3>
+        <p>Batch-convert .Y3S files with the bundled <code>y3s2wav</code> tool. No dependencies beyond Python.</p>
       </div>
     </div>
   </div>
@@ -244,7 +290,7 @@
   <div class="wrap">
     <div class="kicker">Download</div>
     <h2>Get SEQTRAK Sampler</h2>
-    <p class="section-lede">Free and open source. The builds aren't code-signed yet, so your OS will ask once before opening them (see the FAQ).</p>
+    <p class="section-lede">Free and open source, currently v0.6. The builds aren't code-signed yet, so your OS will ask once before opening them (see the FAQ).</p>
     <div class="downloads">
       <div class="dl">
         <h3>macOS</h3>
@@ -275,28 +321,40 @@ y3s2wav *.Y3S -o wavs/ --normalize</pre>
     <div class="kicker">FAQ</div>
     <h2>Questions</h2>
     <details>
-      <summary>Where do I get the .Y3S file?</summary>
-      <p>In the SEQTRAK app, open Project / Sound Manager, go to Sounds, right-click the resampled sound and choose Export.</p>
+      <summary>How do I connect the SEQTRAK?</summary>
+      <p>Plug it into your computer with a USB cable. The SEQTRAK panel in the app's sidebar shows Connected and lists the pads. The app reads pads using the SEQTRAK's <em>USB MIDI Transmit System Exclusive</em> setting, which is off by default; if the panel says SysEx is off, click Enable.</p>
     </details>
     <details>
-      <summary>Does it change my SEQTRAK or its library?</summary>
-      <p>No. SEQTRAK Sampler only reads .Y3S files and writes ordinary WAV files to a folder you choose. It never writes Yamaha files or touches the SEQTRAK app's data.</p>
+      <summary>Why can't the app see my SEQTRAK on Windows?</summary>
+      <p>On Windows only one app can use the SEQTRAK's MIDI port at a time. Close the SEQTRAK app while you trim or slice pads. Recording works either way, since it only uses the USB audio.</p>
+    </details>
+    <details>
+      <summary>Does it change my SEQTRAK?</summary>
+      <p>Only when you ask it to. Apply to pad and Load to pads change pad start and end points, names, and which recording a pad plays. They never delete audio, and Undo puts pads back. Reading .Y3S files and exporting WAVs never touches the device or the SEQTRAK app's data.</p>
+    </details>
+    <details>
+      <summary>Does Slice mode use up sample memory?</summary>
+      <p>No. Every sliced pad plays the source pad's recording, trimmed to its own segment, so no new audio is recorded. Pads that held other samples keep those recordings on the SEQTRAK, which is how Undo brings them back.</p>
+    </details>
+    <details>
+      <summary>Can it put a sample on a synth track?</summary>
+      <p>Not directly: the SEQTRAK's MIDI connection doesn't carry audio. Export the WAV, or drag it from the app onto the SEQTRAK app's import, and it lands on a synth track.</p>
+    </details>
+    <details>
+      <summary>Where do I get a .Y3S file?</summary>
+      <p>In the SEQTRAK app, open Project / Sound Manager, go to Sounds, right-click the sound and choose Export. Point the app's Watch folder at where you export them and they load on their own.</p>
     </details>
     <details>
       <summary>Why is there a 16-second limit?</summary>
-      <p>That's the SEQTRAK's own maximum sample length. The app warns you and blocks the export until the selection fits, or you can press "Cut to 16 s" to trim it with a fade-out.</p>
-    </details>
-    <details>
-      <summary>Is the output stereo?</summary>
-      <p>Yes, always 44.1 kHz, 16-bit stereo. Mono sounds are copied to both channels.</p>
+      <p>That's the SEQTRAK's own maximum sample length. The app warns you and blocks the export until the selection fits, or you can press Cut to 16 s to trim it with a fade-out.</p>
     </details>
     <details>
       <summary>Why does my computer warn me when I open it?</summary>
       <p>The builds aren't signed with a paid Apple or Microsoft developer certificate yet. On macOS, right-click the app and choose Open. On Windows, click More info, then Run anyway. You can also build it yourself from source.</p>
     </details>
     <details>
-      <summary>How does it read .Y3S files?</summary>
-      <p>A .Y3S export is a zip archive holding XML metadata and raw PCM audio. The layout is documented in <a href="https://github.com/rechandler/seqtrak_sampler/blob/main/FORMAT.md">FORMAT.md</a>.</p>
+      <summary>How does it talk to the SEQTRAK?</summary>
+      <p>With the MIDI messages in Yamaha's <a href="https://data.yamaha.com/files/download/other_assets/5/2226075/SEQTRAK_data_list_En_D0.pdf">SEQTRAK Data List</a>. The .Y3S file layout is documented in <a href="https://github.com/rechandler/seqtrak_sampler/blob/main/FORMAT.md">FORMAT.md</a>.</p>
     </details>
   </div>
 </section>
