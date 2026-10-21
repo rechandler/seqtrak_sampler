@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
-from .. import audio, sysex
+from .. import __version__, audio, sysex
 from ..files import FolderScanner, safe_filename, unique_path
 from ..y3s import read_y3s
 from . import device as dev
@@ -93,7 +93,7 @@ def load_take(path: Path) -> Take:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SEQTRAK Sampler")
+        self.setWindowTitle(f"SEQTRAK Sampler {__version__}")
         self.setAcceptDrops(True)
         self.resize(1140, 700)
         self.setMinimumSize(1000, 560)
@@ -118,6 +118,9 @@ class MainWindow(QMainWindow):
         logo.setStyleSheet(f"background: {theme.ACCENT}; border-radius: 6px;")
         title = QLabel("SEQTRAK Sampler")
         title.setObjectName("appTitle")
+        version = QLabel(f"v{__version__}")
+        version.setObjectName("versionChip")
+        version.setToolTip(f"SEQTRAK Sampler version {__version__}")
         subtitle = QLabel("Turn SEQTRAK resamples into synth-ready WAVs")
         subtitle.setObjectName("appSubtitle")
         add_btn = QPushButton("+  Add files")
@@ -128,6 +131,7 @@ class MainWindow(QMainWindow):
         header.setSpacing(10)
         header.addWidget(logo)
         header.addWidget(title)
+        header.addWidget(version)
         header.addSpacing(6)
         header.addWidget(subtitle)
         header.addStretch()
@@ -728,7 +732,6 @@ class MainWindow(QMainWindow):
     def _copy_midi_log(self) -> None:
         from PySide6.QtWidgets import QApplication
 
-        from .. import __version__
         pads = "; ".join(
             f"pad {p.pad + 1}: {p.name!r} start={p.start} end={p.end} notes={p.note_low}-"
             f"{p.note_high}" for p in self._pads.values()) or "none read"

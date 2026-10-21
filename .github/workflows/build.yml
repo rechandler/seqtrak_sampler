@@ -36,6 +36,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Stamp release version
+        if: inputs.version != '' || startsWith(github.ref, 'refs/tags/v')
+        shell: python
+        env:
+          VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          import os, pathlib, re
+          version = os.environ["VERSION"].lstrip("v")
+          path = pathlib.Path("src/seqtrak_sampler/__init__.py")
+          path.write_text(re.sub(r'__version__ = ".*"', f'__version__ = "{version}"',
+                                 path.read_text()))
+          print("version", version)
       - run: pip install pyinstaller ".[gui]"
       - run: pyinstaller --noconfirm --windowed --name "SEQTRAK Sampler" packaging/launch.py
       - name: Allow audio input (macOS)
