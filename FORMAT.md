@@ -83,9 +83,10 @@ Keybank record (offsets relative to record start):
 512 bytes. Starts `00 00 00 71`, then from offset 4 the sound name in Yamaha's 7-bit
 packed form, the same encoding the SEQTRAK uses for names over MIDI (SEQTRAK Data List,
 pp. 152-154): groups of one high-bits byte followed by 7 data bytes. That's why the name
-reads `00 Resampl 00 ing-5-1`. From 0x65: u32 LE values `511567` (last frame),
-`105388` (start point; the data list's *Start Point* parameter for the pad),
-`222527` (unknown, possibly loop related), `511568` (frame count). The rest looks like
+reads `00 Resampl 00 ing-5-1`. From 0x65: u32 LE values `511567` (last frame; the same
+value the SEQTRAK reports in the pad's *Loop Length* field), `105388` (start point) and
+`222527` (end point), matching the pad's *Start Point* and *End Point* over MIDI, then
+`511568` (frame count). The rest looks like
 7-bit parameter values (level, filter, envelope, ...), padded with `FF` from 0x102.
 
 ## Over MIDI
@@ -95,3 +96,10 @@ name, loop on/off, loop length and start/end points through bulk dumps of the
 *SAMPLER Sample General* block at `50 eA 00` (e = pad 0-6, A = sampler part 10). There is
 no block for the audio itself. The end point always has bits 3-0 set, and an end point of
 0 means the pad is empty. See `src/seqtrak_sampler/sysex.py`.
+
+Two things a real SEQTRAK (OS 2.0) does differently from how the data list reads:
+
+- The bulk dump checksum makes Model ID + address + data + checksum add up to 0 in the
+  low 7 bits. The byte count isn't included.
+- For a one-shot pad, *Loop Length* holds the sample's last frame (the full length), not
+  a loop length.

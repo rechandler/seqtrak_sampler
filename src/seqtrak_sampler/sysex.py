@@ -102,17 +102,18 @@ class BulkBlock:
 
 def bulk_dump_problem(msg: list[int]) -> str | None:
     """Why msg isn't a SEQTRAK bulk dump this module can read, or None if it is."""
-    if len(msg) < 13 or msg[0] != 0xF0 or msg[-1] != 0xF7:
+    if len(msg) < 4 or msg[0] != 0xF0 or msg[-1] != 0xF7:
         return "not a complete SysEx message"
-    if msg[1] != YAMAHA or msg[2] & 0xF0 != 0x00:
+    if msg[1] == YAMAHA and msg[2] & 0xF0 == 0x10:
+        return "parameter change (not needed)"
+    if len(msg) < 13 or msg[1] != YAMAHA or msg[2] & 0xF0 != 0x00:
         return "not a Yamaha bulk dump"
     if msg[3:5] != [GROUP_HI, GROUP_LO] or msg[7] != MODEL:
         return f"unexpected group/model {msg[3]:02X} {msg[4]:02X} / {msg[7]:02X}"
-    # "The Check-sum is the value that results in a value of 0 for the lower 7
-    # bits when the Byte Count, Start Address, Data and Check-sum are added"
-    # (p. 115). Whether Model ID is included is ambiguous, so accept either.
-    total = msg[5] + msg[6] + sum(msg[8:-1])
-    if total & 0x7F and (total + MODEL) & 0x7F:
+    # The data list (p. 115) says the checksum covers the byte count, address and
+    # data, but a real SEQTRAK (OS 2.0) sums Model ID, address, data and checksum
+    # to 0 in the low 7 bits, without the byte count.
+    if sum(msg[7:-1]) & 0x7F:
         return "checksum mismatch"
     return None
 

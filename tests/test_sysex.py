@@ -3,13 +3,10 @@ import unittest
 from seqtrak_sampler import sysex
 
 
-def bulk_dump(address, data, include_model_in_checksum=False):
+def bulk_dump(address, data):
     count = 1 + 3 + len(data)
     bh, bl = count >> 7, count & 0x7F
-    total = bh + bl + sum(address) + sum(data)
-    if include_model_in_checksum:
-        total += sysex.MODEL
-    cc = (-total) & 0x7F
+    cc = (-(sysex.MODEL + sum(address) + sum(data))) & 0x7F  # as a real SEQTRAK does
     return [0xF0, 0x43, 0x00, 0x7F, 0x1C, bh, bl, 0x0C, *address, *data, cc, 0xF7]
 
 
@@ -21,6 +18,10 @@ def sample_general(name="Resampling-5-1", start=105388, end=511567, loop_on=0, l
     data[0x66:0x6A] = sysex.encode_point(start)
     data[0x6A:0x6E] = sysex.encode_point(end)
     return data
+
+
+def _hex(text):
+    return [int(x, 16) for x in text.split()]
 
 
 class SysexTests(unittest.TestCase):
@@ -37,9 +38,7 @@ class SysexTests(unittest.TestCase):
 
     def test_bulk_dump_ignores_byte_count(self):
         msg = bulk_dump(sysex.sample_general_address(0), sample_general())
-        msg[5], msg[6] = 0, 0x10   # wrong count; fix the checksum to match
-        body_total = msg[5] + msg[6] + sum(msg[8:-2])
-        msg[-2] = (-body_total) & 0x7F
+        msg[5], msg[6] = 0, 0x10   # wrong count; the checksum doesn't include it
         self.assertIsNotNone(sysex.parse_bulk_dump(msg))
         self.assertEqual(sysex.bulk_dump_problem([0xF0, 0x41, 0xF7]),
                          "not a complete SysEx message")
@@ -68,15 +67,33 @@ class SysexTests(unittest.TestCase):
         self.assertEqual(len(enc), sysex.NAME_SIZE)
         self.assertEqual(sysex.decode_name(enc), "Lofi Rhodes _")
 
-    def test_parse_pad_block_both_checksum_readings(self):
+    def test_parse_pad_block(self):
         addr = sysex.sample_general_address(2)
         self.assertEqual(addr, (0x50, 0x2A, 0x00))
-        for with_model in (False, True):
-            block = sysex.parse_bulk_dump(bulk_dump(addr, sample_general(), with_model))
-            pad = sysex.pad_from_block(block)
-            self.assertEqual((pad.pad, pad.name, pad.start, pad.end),
-                             (2, "Resampling-5-1", 105388, 511567))
-            self.assertAlmostEqual(pad.seconds, (511567 - 105388 + 1) / 44100)
+        pad = sysex.pad_from_block(sysex.parse_bulk_dump(bulk_dump(addr, sample_general())))
+        self.assertEqual((pad.pad, pad.name, pad.start, pad.end),
+                         (2, "Resampling-5-1", 105388, 511567))
+        self.assertAlmostEqual(pad.seconds, (511567 - 105388 + 1) / 44100)
+
+    def test_real_seqtrak_replies(self):
+        """Messages captured from a SEQTRAK running OS 2.0."""
+        header = _hex("F0 43 00 7F 1C 00 04 0C 11 13 00 50 F7")
+        self.assertEqual(sysex.parse_bulk_dump(header).address, (0x11, 0x13, 0x00))
+        pad1 = _hex(
+            "F0 43 00 7F 1C 00 74 0C 50 0A 00 00 52 65 73 61 6D 70 6C 00 69 6E 67 2D 35 2D 31"
+            + " 00" * 81 + " 1F 1C 4F 00 00 00 06 37 2C 00 0D 4A 3F 00 00 3F F7")
+        pad = sysex.pad_from_block(sysex.parse_bulk_dump(pad1))
+        self.assertEqual((pad.pad, pad.name, pad.start, pad.end),
+                         (0, "Resampling-5-1", 105388, 222527))
+        osc2 = _hex(
+            "F0 43 00 7F 1C 00 71 0C 41 1A 00 01 01 00 03 16 00 00 00 01 00 00 40 00 40 40 00"
+            " 3D 3D 01 7F 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 07"
+            " 0B 00 00 64 54 00 03 00 00 00 7F 7F 32 00 7F 7F 7F 00 04 40 40 18 24 30 3C 48 01"
+            " 00 01 00 01 00 01 00 40 40 40 40 40 00 00 40 3C 40 00 28 40 40 40 01 00 01 00 01"
+            " 00 01 00 01 00 54 04 40 40 02 40 3C 11 F7")
+        self.assertEqual(sysex.pad_notes_from_block(sysex.parse_bulk_dump(osc2)), (1, 61, 61))
+        change = _hex("F0 43 10 7F 1C 0C 01 10 28 00 F7")
+        self.assertEqual(sysex.bulk_dump_problem(change), "parameter change (not needed)")
 
     def test_rejects_bad_checksum_and_other_blocks(self):
         msg = bulk_dump(sysex.sample_general_address(0), sample_general())
