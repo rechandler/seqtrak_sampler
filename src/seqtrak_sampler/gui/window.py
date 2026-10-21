@@ -198,6 +198,12 @@ class MainWindow(QMainWindow):
         sidebar_col.addWidget(self.rec_status)
         sidebar_col.addWidget(self.level_bar)
         sidebar_col.addWidget(self.pads_list)
+        self.log_btn = QPushButton("Copy MIDI log")
+        self.log_btn.setObjectName("ghost")
+        self.log_btn.setToolTip("Copy the recent MIDI messages to the clipboard, to report a "
+                                "problem")
+        self.log_btn.clicked.connect(self._copy_midi_log)
+        sidebar_col.addWidget(self.log_btn, 0, Qt.AlignLeft)
         sidebar_col.addSpacing(10)
         sidebar_col.addWidget(samples_title)
         sidebar_col.addWidget(self.list, 1)
@@ -715,8 +721,22 @@ class MainWindow(QMainWindow):
         self.device_label.setText(text)
         self.device_dot.setStyleSheet(f"background: {color}; border-radius: 4px;")
         self.enable_btn.setVisible(state == dev.SILENT)
+        self.log_btn.setVisible(state not in (dev.UNAVAILABLE, dev.DISCONNECTED))
         self.pads_list.setVisible(state == dev.CONNECTED)
         self._update_send_button()
+
+    def _copy_midi_log(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        from .. import __version__
+        pads = "; ".join(
+            f"pad {p.pad + 1}: {p.name!r} start={p.start} end={p.end} notes={p.note_low}-"
+            f"{p.note_high}" for p in self._pads.values()) or "none read"
+        header = [f"SEQTRAK Sampler {__version__}", f"state: {self.device.state}",
+                  f"pads: {pads}", ""]
+        QApplication.clipboard().setText("\n".join(header + list(self.device.log)))
+        self._show_toast(f"Copied {len(self.device.log)} MIDI log lines. Paste them in a "
+                         f"message.")
 
     def _pad_state(self, pad: sysex.SamplerPad) -> str:
         if pad.empty:
@@ -772,8 +792,14 @@ class MainWindow(QMainWindow):
         self._update_send_button()
 
     def _pad_clicked(self, item: QListWidgetItem) -> None:
-        pad = self._pads.get(self.pads_list.row(item))
-        if pad is None or pad.empty:
+        row = self.pads_list.row(item)
+        pad = self._pads.get(row)
+        if pad is None:
+            self._show_toast(f"Pad {row + 1} hasn't been read from the SEQTRAK yet. If this "
+                             f"keeps happening, click Copy MIDI log and send it.", error=True)
+            return
+        if pad.empty:
+            self._show_toast(f"The SEQTRAK reports pad {row + 1} as empty.", error=True)
             return
         take = self._take_for_pad(pad)
         if take is not None:
