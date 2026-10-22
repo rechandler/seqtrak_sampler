@@ -109,6 +109,19 @@ pip install ".[gui]"
 seqtrak-sampler
 ```
 
+## Android USB test (experimental)
+
+`android/` holds a small Android app that checks whether a phone can do what a mobile
+SEQTRAK Sampler would need over USB: find the SEQTRAK's USB MIDI, get SysEx answers,
+read the pads, and record a pad through the SEQTRAK's USB audio while it plays. It shows
+a pass/fail checklist and the recording, and **Share report** sends the details back.
+Yamaha notes that on Android the SEQTRAK's USB audio "may not work properly" with apps
+other than its own, so this settles it before any real mobile app is built.
+
+Get the APK from the [Releases page](https://github.com/rechandler/seqtrak_sampler/releases)
+(the *Android USB test* pre-releases). To build it: `cd android && gradle assembleDebug`
+(Android SDK and JDK 17 needed).
+
 ## Command line
 
 Python 3.9+, no other dependencies.

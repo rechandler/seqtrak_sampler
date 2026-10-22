@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    paths-ignore: ["docs/**"]
+    paths-ignore: ["docs/**", "android/**", ".github/workflows/android.yml"]
   pull_request:
   workflow_dispatch:
     inputs:
