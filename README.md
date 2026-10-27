@@ -36,8 +36,9 @@ trimming never writes to other pads by accident.
    what happens to it: *source · trimmed*, *empty*, or *was "…"*. Pads after the last
    segment are left alone. Click a tile to hear its segment.
 4. **Load to pads 1–N:** done in one click, with nothing to record. Every pad is set to
-   play the source pad's recording (it's already on the SEQTRAK) and trimmed to its own
-   segment, named "Source 1", "Source 2", … Play the pads on the SEQTRAK to hear them.
+   play the source pad's recording (it's already on the SEQTRAK) with the source pad's
+   sound settings (level, envelope, filter, EQ), and trimmed to its own segment, named
+   "Source 1", "Source 2", … Play the pads on the SEQTRAK to hear them.
 
 **Undo** puts every pad back the way it was, including pads that had other samples:
 their recordings stay on the SEQTRAK, so nothing is lost. The app asks before it uses

@@ -1,8 +1,9 @@
 """Slice mode: cut a pad's sample into segments and put segment N on pad N.
 
-No audio is copied: pads 2..N are pointed at the source pad's recording (its user
-wave number) and each is given its own start and end point. That's instant, exact to
-the frame, and undoable, since the pads' previous recordings stay on the SEQTRAK.
+No audio is copied: pads 2..N get the source pad's sound settings, including its
+recording (user wave number), level, envelope and filter, and each is given its own
+start and end point. That's instant, exact to the frame, and undoable, since the pads'
+previous recordings stay on the SEQTRAK.
 """
 
 from __future__ import annotations
@@ -325,7 +326,7 @@ class SlicePanel(QWidget):
 
         connected = self.window.device.state == dev.CONNECTED
         source_pad = self.window._pads.get(self.source.pad) if has_source else None
-        ready = source_pad is not None and source_pad.wave is not None
+        ready = source_pad is not None and source_pad.osc is not None
         self.load_btn.setText("Apply to pad 1" if n <= 1 else f"Load to pads 1–{n}")
         self.load_btn.setEnabled(has_source and connected and ready)
         self.load_btn.setToolTip("" if connected else "Connect the SEQTRAK first")
@@ -359,7 +360,7 @@ class SlicePanel(QWidget):
                     msgs = sysex.trim_messages(current, start, end, source_pad.last_frame,
                                                label)
                 else:
-                    msgs = sysex.slice_messages(i, source_pad, start, end, label)
+                    msgs = sysex.slice_messages(current, source_pad, start, end, label)
                 changes.append((current, label, msgs))
         except ValueError as e:
             QMessageBox.warning(self, "Load to pads", str(e))

@@ -28,6 +28,16 @@ from test_sysex import bulk_dump, sample_general  # noqa: E402
 from test_y3s import make_y3s  # noqa: E402
 
 
+ELEMENT_LEVEL = 0x2E
+# A sampler pad's oscillator block from a SEQTRAK running OS 2.0 (pad 2, wave 406).
+USED_OSC = [int(x, 16) for x in (
+    "01 01 00 03 16 00 00 00 01 00 00 40 00 40 40 00 3D 3D 01 7F 00 00 00 00 01 00 00 00 00"
+    " 00 00 00 00 00 00 00 00 00 00 00 00 00 07 0B 00 00 64 54 00 03 00 00 00 7F 7F 32 00 7F"
+    " 7F 7F 00 04 40 40 18 24 30 3C 48 01 00 01 00 01 00 01 00 40 40 40 40 40 00 00 40 3C 40"
+    " 00 28 40 40 40 01 00 01 00 01 00 01 00 01 00 54 04 40 40 02 40 3C").split()]
+USED_FILTER = [0x04, 0x01, 0x20] + [0x40] * 68
+
+
 class FakeSeqtrak:
     """Answers the documented SysEx messages like a SEQTRAK would."""
 
@@ -36,6 +46,7 @@ class FakeSeqtrak:
         self.pads = {0: dict(name="Resampling-5-1", start=105388, end=511567)}
         self.callback = None
         self.sent: list[list[int]] = []
+        self.changes: list[tuple[int, int, int]] = []   # (pad, block, offset) changed
 
     def reply(self, msg):
         if self.callback and self.sysex_on:
@@ -53,26 +64,17 @@ class FakeSeqtrak:
         elif msg[:9] == sysex.pad_request(msg[8])[:9] and len(msg) == 10:
             pad = msg[8]
             p = self.pad(pad)
-            osc = [0] * 109
-            osc[sysex.ELEMENT_ASSIGN] = int(p["assigned"])
-            osc[sysex.WAVE_SELECT] = 1
-            osc[sysex.WAVE_NUMBER:sysex.WAVE_NUMBER + 2] = [p["wave"] >> 7, p["wave"] & 0x7F]
-            osc[sysex.NOTE_LIMIT_LOW] = p["note_low"]
-            osc[sysex.NOTE_LIMIT_HIGH] = p["note_high"]
-            self.reply(bulk_dump(sysex.oscillator_address(pad, 0), osc))
+            self.reply(bulk_dump(sysex.oscillator_address(pad, 0), p["osc"]))
+            self.reply(bulk_dump((sysex.FILTER_HI, (pad << 4) | 0x0A, 0x00), p["filt"]))
             self.reply(bulk_dump(sysex.sample_general_address(pad),
                                  sample_general(p["name"], p["start"], p["end"],
                                                 int(p["loop_on"]), p["loop_length"])))
-        elif msg[2] == 0x10 and msg[6] == sysex.OSCILLATOR_HI:
-            p, offset = self.pad(msg[7] >> 4), msg[8]
-            if offset == sysex.ELEMENT_ASSIGN:
-                p["assigned"] = bool(msg[9])
-            elif offset == sysex.WAVE_NUMBER:
-                p["wave"] = (msg[9] << 7) | msg[10]
-            elif offset == sysex.NOTE_LIMIT_LOW:
-                p["note_low"] = msg[9]
-            elif offset == sysex.NOTE_LIMIT_HIGH:
-                p["note_high"] = msg[9]
+        elif msg[2] == 0x10 and msg[6] in (sysex.OSCILLATOR_HI, sysex.FILTER_HI):
+            p, offset, data = self.pad(msg[7] >> 4), msg[8], msg[9:-1]
+            block = p["osc"] if msg[6] == sysex.OSCILLATOR_HI else p["filt"]
+            block[offset:offset + len(data)] = data
+            self.changes.append((msg[7] >> 4, msg[6], offset))
+            self._sync(p)
         elif msg[2] == 0x10 and msg[6] == 0x50:
             p, offset = self.pad(msg[7] >> 4), msg[8]
             if offset < sysex.NAME_SIZE:
@@ -92,13 +94,32 @@ class FakeSeqtrak:
         """The pad's state, with what a real SEQTRAK reports for anything not set."""
         p = self.pads.setdefault(pad, dict(name="", start=0, end=0))
         has_sample = p["end"] > 0
-        p.setdefault("wave", 400 + pad if has_sample else 0)
-        p.setdefault("assigned", has_sample)
-        p.setdefault("note_low", 60 + pad if has_sample else 0)
-        p.setdefault("note_high", 60 + pad if has_sample else 127)
+        if "osc" not in p:
+            osc = list(USED_OSC)
+            filt = list(USED_FILTER)
+            wave = p.get("wave", 400 + pad if has_sample else 0)
+            osc[sysex.WAVE_NUMBER:sysex.WAVE_NUMBER + 2] = [wave >> 7, wave & 0x7F]
+            if has_sample:
+                osc[sysex.NOTE_LIMIT_LOW] = osc[sysex.NOTE_LIMIT_HIGH] = 60 + pad
+            else:
+                # An empty pad: switched off, all notes, and not set up for a sample.
+                osc[sysex.ELEMENT_ASSIGN] = 0
+                osc[sysex.NOTE_LIMIT_LOW], osc[sysex.NOTE_LIMIT_HIGH] = 0, 127
+                osc[ELEMENT_LEVEL] = 0x40
+                filt[0] = 0x15
+            p["osc"], p["filt"] = osc, filt
+            self._sync(p)
         p.setdefault("loop_on", False)
         p.setdefault("loop_length", p["end"])     # one-shot pads report their last frame
         return p
+
+    @staticmethod
+    def _sync(p):
+        osc = p["osc"]
+        p["assigned"] = bool(osc[sysex.ELEMENT_ASSIGN])
+        p["wave"] = (osc[sysex.WAVE_NUMBER] << 7) | osc[sysex.WAVE_NUMBER + 1]
+        p["note_low"], p["note_high"] = osc[sysex.NOTE_LIMIT_LOW], osc[sysex.NOTE_LIMIT_HIGH]
+        p["level"] = osc[ELEMENT_LEVEL]
 
     def module(self):
         device = self
@@ -271,6 +292,10 @@ class DevicePanelTests(unittest.TestCase):
         fake.pads = {0: dict(name="Break", start=1000, end=300015),
                      1: dict(name="Vox chop", start=0, end=88207)}
         w = self.make_window(fake)
+        fake.pads[0]["osc"][ELEMENT_LEVEL] = 0x70       # the source pad's own settings
+        fake.pads[0]["filt"][0x05] = 0x22
+        empty_osc, empty_filt = list(fake.pads[2]["osc"]), list(fake.pads[2]["filt"])
+        w.device.request_pads()
         w.mode_group.button(1).click()
         panel = w.slice_panel
         self.assertEqual(w.stack.currentWidget(), panel)
@@ -288,6 +313,7 @@ class DevicePanelTests(unittest.TestCase):
         self.assertTrue(panel.load_btn.isEnabled())
 
         QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+        fake.changes.clear()
         panel._load()
         w.device.request_pads()          # what send_trim schedules, done right away
         # Nothing is played into the SEQTRAK: no notes, no sampling source change.
@@ -303,6 +329,17 @@ class DevicePanelTests(unittest.TestCase):
             self.assertEqual(p["name"], f"Break {i + 1}")
         self.assertEqual(fake.pads[2]["loop_length"], 300015)
         self.assertFalse(fake.pads[1]["loop_on"])
+        # ...and sounds like it: level, envelope, filter and EQ come from the source pad,
+        # so a pad that was empty isn't left with an empty pad's settings.
+        for i in (1, 2):
+            expected = list(fake.pads[0]["osc"])
+            expected[0x10] = expected[0x11] = 60 + i
+            self.assertEqual(fake.pads[i]["osc"], expected, i)
+            self.assertEqual(fake.pads[i]["filt"], fake.pads[0]["filt"], i)
+        self.assertEqual(fake.pads[2]["level"], 0x70)
+        # Pad 2 already held a sample, so only what differed was sent.
+        self.assertEqual(sorted({(b, o) for p, b, o in fake.changes if p == 1}),
+                         [(0x41, 0x00), (0x41, 0x03), (0x41, ELEMENT_LEVEL), (0x42, 0x05)])
 
         self.assertTrue(panel.undo_btn.isVisible() or not panel.isVisible())
         panel._undo_load()
@@ -313,6 +350,12 @@ class DevicePanelTests(unittest.TestCase):
                          ("Vox chop", 401, 88207))
         self.assertFalse(fake.pads[2]["assigned"])
         self.assertTrue(w._pads[2].empty)
+        # Undo puts the empty pad's own settings back too (its wave number stays, unused).
+        restored = list(empty_osc)
+        restored[3:5] = fake.pads[2]["osc"][3:5]
+        self.assertEqual(fake.pads[2]["osc"], restored)
+        self.assertEqual(fake.pads[2]["filt"], empty_filt)
+        self.assertEqual(fake.pads[1]["level"], 100)
 
     def test_note_messages_play_the_pad(self):
         fake = FakeSeqtrak()

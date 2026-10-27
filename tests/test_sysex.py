@@ -24,6 +24,14 @@ def _hex(text):
     return [int(x, 16) for x in text.split()]
 
 
+OSC2 = _hex(  # pad 2's oscillator block from a SEQTRAK running OS 2.0
+    "F0 43 00 7F 1C 00 71 0C 41 1A 00 01 01 00 03 16 00 00 00 01 00 00 40 00 40 40 00"
+    " 3D 3D 01 7F 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 07"
+    " 0B 00 00 64 54 00 03 00 00 00 7F 7F 32 00 7F 7F 7F 00 04 40 40 18 24 30 3C 48 01"
+    " 00 01 00 01 00 01 00 40 40 40 40 40 00 00 40 3C 40 00 28 40 40 40 01 00 01 00 01"
+    " 00 01 00 01 00 54 04 40 40 02 40 3C 11 F7")
+
+
 class SysexTests(unittest.TestCase):
     def test_requests(self):
         self.assertEqual(sysex.identity_request(), [0xF0, 0x7E, 0x7F, 0x06, 0x01, 0xF7])
@@ -89,12 +97,7 @@ class SysexTests(unittest.TestCase):
         pad = sysex.pad_from_block(sysex.parse_bulk_dump(pad1))
         self.assertEqual((pad.pad, pad.name, pad.start, pad.end),
                          (0, "Resampling-5-1", 105388, 222527))
-        osc2 = _hex(
-            "F0 43 00 7F 1C 00 71 0C 41 1A 00 01 01 00 03 16 00 00 00 01 00 00 40 00 40 40 00"
-            " 3D 3D 01 7F 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 07"
-            " 0B 00 00 64 54 00 03 00 00 00 7F 7F 32 00 7F 7F 7F 00 04 40 40 18 24 30 3C 48 01"
-            " 00 01 00 01 00 01 00 40 40 40 40 40 00 00 40 3C 40 00 28 40 40 40 01 00 01 00 01"
-            " 00 01 00 01 00 54 04 40 40 02 40 3C 11 F7")
+        osc2 = OSC2
         self.assertEqual(sysex.pad_notes_from_block(sysex.parse_bulk_dump(osc2)), (1, 61, 61))
         change = _hex("F0 43 10 7F 1C 0C 01 10 28 00 F7")
         self.assertEqual(sysex.bulk_dump_problem(change), "parameter change (not needed)")
@@ -134,18 +137,67 @@ class SliceMessageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             sysex.wave_messages(3, 0)
 
-    def test_slice_messages_share_the_source_recording(self):
-        source = sysex.SamplerPad(0, "Break", 1000, 300015, False, 300015, wave=412)
-        msgs = sysex.slice_messages(2, source, 45100, 89200, "Break 3")
-        self.assertEqual(msgs[:5], sysex.wave_messages(2, 412))
-        by_offset = {m[8]: m[9:-1] for m in msgs[5:] if m[6] == 0x50}
+    def test_parameter_tables_cover_each_block(self):
+        osc_bytes = sum(w for _, w in sysex.OSCILLATOR_PARAMS)
+        self.assertEqual(osc_bytes + len(sysex._RESERVED_OSC), sysex.OSCILLATOR_SIZE)
+        filt_bytes = sum(w for _, w in sysex.FILTER_PARAMS)
+        self.assertEqual(filt_bytes + len(sysex._RESERVED_FILTER), sysex.FILTER_SIZE)
+        self.assertIn((sysex.WAVE_NUMBER, 2), sysex.OSCILLATOR_PARAMS)
+        self.assertIn((0x2E, 1), sysex.OSCILLATOR_PARAMS)          # Element Level
+        self.assertIn((0x01, 2), sysex.FILTER_PARAMS)              # Cutoff
+        self.assertNotIn(0x09, [o for o, _ in sysex.OSCILLATOR_PARAMS])  # reserved
+
+    def test_reads_whole_blocks(self):
+        osc = sysex.pad_oscillator_from_block(sysex.parse_bulk_dump(OSC2))
+        self.assertEqual(len(osc.data), sysex.OSCILLATOR_SIZE)
+        self.assertEqual(osc.data[0x2E], 100)                       # Element Level
+        filt = sysex.parse_bulk_dump(bulk_dump((0x42, 0x3A, 0x00), list(range(71))))
+        self.assertEqual(sysex.pad_filter_from_block(filt), (3, list(range(71))))
+        synth = sysex.parse_bulk_dump(bulk_dump((0x42, 0x37, 0x00), list(range(71))))
+        self.assertIsNone(sysex.pad_filter_from_block(synth))
+
+    def source_pad(self):
+        osc = [0x40] * sysex.OSCILLATOR_SIZE
+        osc[0:5] = [1, 1, 0, 412 >> 7, 412 & 0x7F]
+        osc[0x10] = osc[0x11] = 60
+        osc[0x2E] = 110
+        return sysex.SamplerPad(0, "Break", 1000, 300015, False, 300015, 60, 60, 412, True,
+                                osc, [0x22] * sysex.FILTER_SIZE)
+
+    def test_slice_messages_copy_the_source_pad(self):
+        source = self.source_pad()
+        empty = sysex.SamplerPad(2, "", 0, 0, False, 0, 0, 127, 0, False)  # blocks unknown
+        msgs = sysex.slice_messages(empty, source, 45100, 89200, "Break 3")
+        osc = {m[8]: m[9:-1] for m in msgs if m[6:8] == [0x41, 0x2A]}
+        self.assertEqual(osc[sysex.WAVE_NUMBER], [412 >> 7, 412 & 0x7F])
+        self.assertEqual((osc[0x10], osc[0x11]), ([62], [62]))     # its own note
+        self.assertEqual(osc[0x2E], [110])                           # source's level
+        self.assertEqual(len(osc), len(sysex.OSCILLATOR_PARAMS))     # unknown: send all
+        filt = [m for m in msgs if m[6:8] == [0x42, 0x2A]]
+        self.assertEqual(len(filt), len(sysex.FILTER_PARAMS))
+        assign = [i for i, m in enumerate(msgs) if m[6:9] == [0x41, 0x2A, 0x00]]
+        self.assertEqual(len(assign), 1)
+        self.assertEqual(msgs[assign[0]][9], 1)
+        self.assertTrue(all(m[6] == 0x50 for m in msgs[assign[0] + 1:]))  # then the sample
+        by_offset = {m[8]: m[9:-1] for m in msgs if m[6] == 0x50}
         self.assertEqual(by_offset[sysex.LOOP_ON], [0])
         self.assertEqual(sysex.decode_point(by_offset[sysex.LOOP_LENGTH]), 300015)
         self.assertEqual(sysex.decode_point(by_offset[sysex.START_POINT]), 45100)
         self.assertEqual(sysex.decode_point(by_offset[sysex.END_POINT]),
                          sysex.end_point_for(89200, 300015))
         with self.assertRaises(ValueError):
-            sysex.slice_messages(2, sysex.SamplerPad(0, "x", 0, 99, False, 99), 0, 50, "x")
+            sysex.slice_messages(empty, sysex.SamplerPad(0, "x", 0, 99, False, 99), 0, 50, "x")
+
+    def test_slice_messages_send_only_what_differs(self):
+        source = self.source_pad()
+        osc = list(source.osc)
+        osc[0x10] = osc[0x11] = 61
+        osc[0x2E] = 90
+        target = sysex.SamplerPad(1, "Vox", 0, 88207, False, 88207, 61, 61, 412, True,
+                                  osc, list(source.filt))
+        msgs = sysex.copy_sound_messages(target, source)
+        self.assertEqual([m[6:10] for m in msgs],
+                         [[0x41, 0x1A, 0x2E, 110], [0x41, 0x1A, 0x00, 0x01]])
 
     def test_restore_puts_wave_back_or_switches_pad_off(self):
         now = sysex.SamplerPad(2, "Break 3", 45100, 89207, False, 300015, 62, 62, 412, True)
@@ -155,6 +207,25 @@ class SliceMessageTests(unittest.TestCase):
         empty = sysex.SamplerPad(2, "", 0, 0, False, 0, 0, 127, 0, False)
         msgs = sysex.restore_messages(now, empty)
         self.assertIn(sysex.parameter_change(sysex.oscillator_address(2, 0), [0]), msgs)
+
+    def test_restore_puts_whole_blocks_back(self):
+        source = self.source_pad()
+        now = sysex.SamplerPad(2, "Break 3", 45100, 89207, False, 300015, 62, 62, 412, True,
+                               list(source.osc), list(source.filt))
+        now.osc[0x10] = now.osc[0x11] = 62
+        empty_osc = [0] * sysex.OSCILLATOR_SIZE
+        empty_osc[0x11] = 127
+        empty_osc[0x2E] = 0x40
+        empty_filt = [0x15] + [0x40] * (sysex.FILTER_SIZE - 1)
+        empty = sysex.SamplerPad(2, "", 0, 0, False, 0, 0, 127, 0, False,
+                                 empty_osc, empty_filt)
+        msgs = sysex.restore_messages(now, empty)
+        changes = {(m[6], m[8]): m[9:-1] for m in msgs if m[6] in (0x41, 0x42)}
+        self.assertEqual(changes[(0x41, 0x2E)], [0x40])
+        self.assertEqual(changes[(0x41, 0x10)], [0])
+        self.assertEqual(changes[(0x42, 0x00)], [0x15])
+        self.assertEqual(changes[(0x41, 0x00)], [0])                 # switched off
+        self.assertNotIn((0x41, sysex.WAVE_NUMBER), changes)        # wave 0 isn't valid
 
 
 class RestoreTests(unittest.TestCase):

@@ -11,7 +11,7 @@ start/end points, but not the sample data itself (pp. 121, 152-154).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 YAMAHA = 0x43
 GROUP_HI, GROUP_LO = 0x7F, 0x1C
@@ -56,6 +56,34 @@ WAVE_NUMBER = 0x03      # 2 bytes: user wave 1-2048, the recording the pad plays
 NOTE_LIMIT_LOW = 0x10
 NOTE_LIMIT_HIGH = 0x11
 BASE_NOTE = 60          # pad n plays note 60 + n on a real SEQTRAK
+
+# Every parameter of the Oscillator/Amplitude/Pitch block (p. 147-148) and of the
+# Filter/EQ/LFO block at 42 eA 00 (p. 149-150), as (offset, size); reserved bytes
+# are left out. Together they hold all of a pad's sound settings: level, envelope,
+# pitch, filter, EQ and LFO.
+FILTER_HI = 0x42
+OSCILLATOR_SIZE = 0x6D
+FILTER_SIZE = 0x47
+_TWO_BYTE_OSC = {0x03, 0x27, 0x45, 0x47, 0x49, 0x4B, 0x5C, 0x5E, 0x60, 0x62, 0x64}
+_RESERVED_OSC = {0x05, 0x06, 0x07, 0x09, 0x17, 0x1A, *range(0x1B, 0x26), 0x29, 0x2D, 0x32,
+                 0x3C, 0x52}
+_TWO_BYTE_FILTER = {0x01, 0x07, 0x0A, 0x0C, 0x13, 0x15, 0x17, 0x19, 0x1B, 0x28, 0x2A, 0x2C,
+                    0x2E, 0x34, 0x37}
+_RESERVED_FILTER = {0x04, 0x09, 0x42}
+
+
+def _params(size: int, two_byte: set[int], reserved: set[int]) -> list[tuple[int, int]]:
+    out, offset = [], 0
+    while offset < size:
+        width = 2 if offset in two_byte else 1
+        if offset not in reserved:
+            out.append((offset, width))
+        offset += width
+    return out
+
+
+OSCILLATOR_PARAMS = _params(OSCILLATOR_SIZE, _TWO_BYTE_OSC, _RESERVED_OSC)
+FILTER_PARAMS = _params(FILTER_SIZE, _TWO_BYTE_FILTER, _RESERVED_FILTER)
 
 SAMPLER_CHANNEL = 10  # MIDI channel 11 (p. 2)
 MAX_FRAMES = int(16 * SAMPLE_RATE)
@@ -199,6 +227,8 @@ class SamplerPad:
     note_high: int | None = None
     wave: int | None = None       # user wave number (the recording the pad plays)
     assigned: bool | None = None  # Element Assign: is the pad switched on
+    osc: list[int] | None = None  # the whole oscillator block (41 eA 00)
+    filt: list[int] | None = None  # the whole filter block (42 eA 00)
 
     @property
     def note(self) -> int | None:
@@ -242,6 +272,7 @@ class PadOscillator:
     note_high: int
     wave: int
     assigned: bool
+    data: list[int] = field(default_factory=list)
 
 
 def pad_oscillator_from_block(block: BulkBlock) -> PadOscillator | None:
@@ -254,7 +285,18 @@ def pad_oscillator_from_block(block: BulkBlock) -> PadOscillator | None:
     if pad >= SAMPLER_PADS or len(d) <= NOTE_LIMIT_HIGH:
         return None
     return PadOscillator(pad, d[NOTE_LIMIT_LOW], d[NOTE_LIMIT_HIGH],
-                         (d[WAVE_NUMBER] << 7) | d[WAVE_NUMBER + 1], bool(d[ELEMENT_ASSIGN]))
+                         (d[WAVE_NUMBER] << 7) | d[WAVE_NUMBER + 1], bool(d[ELEMENT_ASSIGN]),
+                         list(d[:OSCILLATOR_SIZE]))
+
+
+def pad_filter_from_block(block: BulkBlock) -> tuple[int, list[int]] | None:
+    """(pad, data) if this is a sampler pad's Filter/EQ/LFO block (42 eA 00)."""
+    hi, mid, lo = block.address
+    pad = mid >> 4
+    if (hi != FILTER_HI or lo != 0 or mid & 0x0F != SAMPLER_PART or pad >= SAMPLER_PADS
+            or len(block.data) < FILTER_SIZE):
+        return None
+    return pad, list(block.data[:FILTER_SIZE])
 
 
 def pad_notes_from_block(block: BulkBlock) -> tuple[int, int, int] | None:
@@ -265,6 +307,35 @@ def pad_notes_from_block(block: BulkBlock) -> tuple[int, int, int] | None:
 
 def oscillator_address(pad: int, offset: int) -> tuple[int, int, int]:
     return (OSCILLATOR_HI, (pad << 4) | SAMPLER_PART, offset)
+
+
+def block_messages(hi: int, pad: int, params: list[tuple[int, int]], new: list[int],
+                   old: list[int] | None, skip: tuple[int, ...] = ()) -> list[list[int]]:
+    """Parameter changes that turn a pad's block `old` into `new`, one per parameter
+    that differs (every parameter when `old` isn't known)."""
+    msgs = []
+    for offset, width in params:
+        if offset in skip or offset + width > len(new):
+            continue
+        value = new[offset:offset + width]
+        if old is None or old[offset:offset + width] != value:
+            msgs.append(parameter_change((hi, (pad << 4) | SAMPLER_PART, offset), value))
+    return msgs
+
+
+def copy_sound_messages(target: SamplerPad, source: SamplerPad) -> list[list[int]]:
+    """Give pad `target` all of source's sound settings (recording, level, envelope,
+    filter, EQ, LFO), keeping its own note. Switches the pad on last."""
+    if source.osc is None:
+        raise ValueError("the source pad's settings haven't been read yet")
+    osc = list(source.osc)
+    osc[NOTE_LIMIT_LOW] = osc[NOTE_LIMIT_HIGH] = BASE_NOTE + target.pad
+    msgs = block_messages(OSCILLATOR_HI, target.pad, OSCILLATOR_PARAMS, osc, target.osc,
+                          skip=(ELEMENT_ASSIGN,))
+    if source.filt is not None:
+        msgs += block_messages(FILTER_HI, target.pad, FILTER_PARAMS, source.filt, target.filt)
+    msgs.append(parameter_change(oscillator_address(target.pad, ELEMENT_ASSIGN), [0x01]))
+    return msgs
 
 
 def wave_messages(pad: int, wave: int, note_low: int | None = None,
@@ -284,22 +355,22 @@ def wave_messages(pad: int, wave: int, note_low: int | None = None,
     ]
 
 
-def slice_messages(target: int, source: SamplerPad, start: int, end_exclusive: int,
+def slice_messages(target: SamplerPad, source: SamplerPad, start: int, end_exclusive: int,
                    name: str) -> list[list[int]]:
-    """Make pad `target` play source's recording from start to end (frames of that
-    recording), named `name`."""
-    if source.wave is None:
+    """Make pad `target` sound like the source pad, playing source's recording from
+    start to end (frames of that recording), named `name`."""
+    if source.wave is None or source.osc is None:
         raise ValueError("the source pad's recording isn't known yet")
     last = source.last_frame
     end = end_point_for(end_exclusive, last)
     if not 0 <= start < end:
         raise ValueError("segment is too short for the SEQTRAK")
-    msgs = wave_messages(target, source.wave)
-    msgs.append(parameter_change(sample_general_address(target, LOOP_ON), [0x00]))
-    msgs.append(parameter_change(sample_general_address(target, LOOP_LENGTH),
+    msgs = copy_sound_messages(target, source)
+    msgs.append(parameter_change(sample_general_address(target.pad, LOOP_ON), [0x00]))
+    msgs.append(parameter_change(sample_general_address(target.pad, LOOP_LENGTH),
                                  encode_point(last)))
-    msgs += points_messages(target, start, end)
-    msgs += name_messages(target, name)
+    msgs += points_messages(target.pad, start, end)
+    msgs += name_messages(target.pad, name)
     return msgs
 
 
@@ -360,9 +431,21 @@ def name_messages(pad: int, name: str) -> list[list[int]]:
 
 
 def restore_messages(current: SamplerPad, saved: SamplerPad) -> list[list[int]]:
-    """Put a pad's recording, start, end, loop length and name back to a saved state."""
+    """Put a pad's sound settings, start, end, loop length and name back to a saved
+    state."""
     msgs = []
-    if saved.wave is not None and (saved.wave, saved.assigned, saved.note_low) != \
+    if saved.osc is not None and current.osc is not None:
+        # An empty pad's wave number (0) isn't a valid setting: leave it.
+        skip = (ELEMENT_ASSIGN,) if saved.wave else (ELEMENT_ASSIGN, WAVE_NUMBER)
+        msgs += block_messages(OSCILLATOR_HI, current.pad, OSCILLATOR_PARAMS, saved.osc,
+                               current.osc, skip=skip)
+        if saved.filt is not None and current.filt is not None:
+            msgs += block_messages(FILTER_HI, current.pad, FILTER_PARAMS, saved.filt,
+                                   current.filt)
+        if saved.assigned != current.assigned:
+            msgs.append(parameter_change(oscillator_address(current.pad, ELEMENT_ASSIGN),
+                                         [int(bool(saved.assigned))]))
+    elif saved.wave is not None and (saved.wave, saved.assigned, saved.note_low) != \
             (current.wave, current.assigned, current.note_low):
         if saved.wave >= 1:
             msgs += wave_messages(current.pad, saved.wave, saved.note_low, saved.note_high,
