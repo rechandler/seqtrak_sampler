@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from .. import slicing, sysex
 from . import device as dev
 from . import theme
+from .pattern import PatternInfo, PatternWriter
 from .waveform import WaveformView
 
 
@@ -115,6 +116,9 @@ class SlicePanel(QWidget):
         self.window = window
         self.source: Source | None = None
         self._last_load: list[int] = []   # pads changed by the last load, for Undo
+        self._pattern_backup: PatternInfo | None = None   # for Undo pattern
+        self._pattern_busy = False
+        self.writer = PatternWriter(window.device, parent=self)
         self.setObjectName("card")
         self.setAttribute(Qt.WA_StyledBackground)
 
@@ -179,8 +183,19 @@ class SlicePanel(QWidget):
         self.undo_btn.setToolTip("Put the pads back the way they were before this load")
         self.undo_btn.clicked.connect(self._undo_load)
         self.undo_btn.hide()
+        self.writer.progress.connect(self.status.setText)
+        self.pattern_btn = QPushButton("Write pattern")
+        self.pattern_btn.setToolTip("Write a sampler-track pattern that plays the slices "
+                                    "in order, at the SEQTRAK's tempo")
+        self.pattern_btn.clicked.connect(self._write_pattern)
+        self.pattern_undo_btn = QPushButton("↶  Undo pattern")
+        self.pattern_undo_btn.setToolTip("Put the sampler pattern back the way it was")
+        self.pattern_undo_btn.clicked.connect(self._undo_pattern)
+        self.pattern_undo_btn.hide()
         bottom = QHBoxLayout()
         bottom.addWidget(self.status, 1)
+        bottom.addWidget(self.pattern_undo_btn)
+        bottom.addWidget(self.pattern_btn)
         bottom.addWidget(self.undo_btn)
         bottom.addWidget(self.load_btn)
 
@@ -331,6 +346,10 @@ class SlicePanel(QWidget):
         self.load_btn.setEnabled(has_source and connected and ready)
         self.load_btn.setToolTip("" if connected else "Connect the SEQTRAK first")
         self.undo_btn.setVisible(bool(self._last_load))
+        self.pattern_btn.setEnabled(has_source and connected and n > 0
+                                    and not self._pattern_busy)
+        self.pattern_undo_btn.setVisible(self._pattern_backup is not None)
+        self.pattern_undo_btn.setEnabled(connected and not self._pattern_busy)
 
     def _load(self) -> None:
         segs = self.segments()
@@ -373,6 +392,70 @@ class SlicePanel(QWidget):
         self.status.setText(f"✓  Loaded onto {pads}. Play them on the SEQTRAK; Undo puts "
                             f"them back.")
         self._refresh()
+
+    # Writing a pattern that plays the slices
+
+    def _pattern_running(self, busy: bool) -> None:
+        self._pattern_busy = busy
+        self._refresh()
+
+    def _write_pattern(self) -> None:
+        if self.source is None or not self.segments():
+            return
+        self._pattern_running(True)
+        self.writer.read(self._pattern_read)
+
+    def _pattern_read(self, info: PatternInfo | None, error: str | None) -> None:
+        if info is None:
+            self._pattern_running(False)
+            self.status.setText(error)
+            return
+        segs = self.segments()
+        notes = [(p.note_low if (p := self.window._pads.get(i)) is not None
+                  and p.note_low else sysex.BASE_NOTE + i) for i in range(len(segs))]
+        planned = slicing.pattern_notes(segs, self.source.rate, info.tempo, notes)
+        fits = [n for n in planned if n[0] < sysex.MAX_PATTERN_STEPS]
+        last = max(step for step, *_ in fits) + 1 if fits else 1
+        length = info.steps if last <= info.steps else min(
+            sysex.MAX_PATTERN_STEPS, -(-last // 16) * 16)
+        lines = [f"Write pattern {info.pattern + 1} of the sampler track: "
+                 f"{len(fits)} notes, one per slice, at {info.tempo} BPM?"]
+        if info.events:
+            lines.append(f"It replaces the {len(info.events)} notes in it now. "
+                         f"Undo pattern puts them back.")
+        if length != info.steps:
+            lines.append(f"The pattern grows from {info.steps} to {length} steps to fit.")
+        if len(fits) < len(planned):
+            lines.append(f"{len(planned) - len(fits)} slices start after 128 steps "
+                         f"(8 bars) and are left out.")
+        lines.append("Slice N plays pad N, so load the slices onto the pads too.")
+        if QMessageBox.question(self, "Write pattern", "\n\n".join(lines)) != \
+                QMessageBox.Yes:
+            self._pattern_running(False)
+            self.status.setText("")
+            return
+        self.writer.write(info, fits, lambda ok, msg: self._pattern_done(info, ok, msg))
+
+    def _pattern_done(self, info: PatternInfo, ok: bool, message: str) -> None:
+        if ok:
+            self._pattern_backup = info
+            message = f"✓  {message}. Press Play on the SEQTRAK."
+        self.status.setText(message)
+        self._pattern_running(False)
+
+    def _undo_pattern(self) -> None:
+        info = self._pattern_backup
+        if info is None:
+            return
+        self._pattern_running(True)
+
+        def done(ok: bool, message: str) -> None:
+            if ok:
+                self._pattern_backup = None
+                message = f"✓  {message}."
+            self.status.setText(message)
+            self._pattern_running(False)
+        self.writer.restore(info, done)
 
     def _undo_load(self) -> None:
         for pad in self._last_load:

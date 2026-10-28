@@ -51,6 +51,14 @@ class FakeSeqtrak:
         # Stored sampler elements, (bank, number) -> dict(name, start, end, wave).
         self.stored: dict[tuple[int, int], dict] = {}
         self.silent: set[tuple[int, int]] = set()    # elements that never answer
+        # Parameters answered to Parameter Requests, and the sampler piano roll's
+        # events per pattern (8 bytes each, kept in time order like the real one).
+        self.params = {sysex.TEMPO: [0x00, 120], sysex.SEQUENCER_STATUS: [0],
+                       sysex.pattern_select_address(10): [0]}
+        for k in range(6):
+            self.params[sysex.pattern_step_address(10, k)] = [0, 16]
+        self.rolls: dict[int, list[list[int]]] = {}
+        self.drop: dict[tuple, int] = {}             # requests to leave unanswered, n times
 
     def reply(self, msg):
         if self.callback and self.sysex_on:
@@ -60,7 +68,17 @@ class FakeSeqtrak:
         self.sent.append(msg)
         if msg[0] != 0xF0:
             return  # notes play sound on the real device; nothing to answer
-        if msg == sysex.enable_usb_sysex_transmit():
+        if msg[2] == 0x30 and len(msg) == 10:
+            self._answer_request(tuple(msg[6:9]))
+        elif msg[2] == 0x10 and msg[6] == 0x72 and msg[7] >> 4 == sysex.SAMPLER_ROLL:
+            roll = self.roll()
+            roll.append(msg[9:-1])
+            roll.sort(key=lambda e: (e[0] << 7) | e[1])
+        elif msg[2] == 0x10 and msg[6:9] == [0x01, 0x1A, 0x37]:
+            self.rolls[msg[9]] = []
+        elif msg[2] == 0x10 and tuple(msg[6:9]) in self.params:
+            self.params[tuple(msg[6:9])] = msg[9:-1]
+        elif msg == sysex.enable_usb_sysex_transmit():
             self.sysex_on = True
         elif msg == sysex.identity_request():
             self.reply([0xF0, 0x7E, 0x7F, 0x06, 0x02, 0x43, 0x00, 0x41, 0x64, 0x06, 0x0A,
@@ -109,6 +127,24 @@ class FakeSeqtrak:
                 p["start"] = sysex.decode_point(msg[9:13])
             elif offset == sysex.END_POINT:
                 p["end"] = sysex.decode_point(msg[9:13])
+
+    def roll(self):
+        """The sampler track's selected pattern."""
+        return self.rolls.setdefault(self.params[sysex.pattern_select_address(10)][0], [])
+
+    def _answer_request(self, address):
+        if self.drop.get(address):
+            self.drop[address] -= 1
+            return
+        if address[0] == 0x75 and address[1] >> 4 == sysex.SAMPLER_ROLL:
+            index = ((address[1] & 0x0F) << 7) | address[2]
+            roll = self.roll()
+            data = roll[index] if index < len(roll) else []
+        elif address in self.params:
+            data = self.params[address]
+        else:
+            return
+        self.reply([0xF0, 0x43, 0x10, 0x7F, 0x1C, 0x0C, *address, *data, 0xF7])
 
     def pad(self, pad):
         """The pad's state, with what a real SEQTRAK reports for anything not set."""
@@ -380,6 +416,84 @@ class DevicePanelTests(unittest.TestCase):
         self.assertEqual(fake.pads[2]["osc"], restored)
         self.assertEqual(fake.pads[2]["filt"], empty_filt)
         self.assertEqual(fake.pads[1]["level"], 100)
+
+    def wait_for(self, condition, seconds=5.0):
+        deadline = time.monotonic() + seconds
+        while not condition() and time.monotonic() < deadline:
+            self.app.processEvents()
+            time.sleep(0.005)
+        self.assertTrue(condition())
+
+    def slice_window(self, fake):
+        from seqtrak_sampler.gui import slice_mode
+        w = self.make_window(fake)
+        w.mode_group.button(1).click()
+        panel = w.slice_panel
+        sound = array("h", [3000] * 88200)                # 2 s
+        panel.set_source(slice_mode.Source("Break", sound, array("h", sound), 44100,
+                                           pad=0, device_offset=1000))
+        panel._split(4)                                    # 0.5 s each
+        return w, panel
+
+    def test_write_pattern_plays_the_slices_and_undo_puts_it_back(self):
+        from PySide6.QtWidgets import QMessageBox
+        fake = FakeSeqtrak()
+        fake.pads = {0: dict(name="Break", start=1000, end=300015)}
+        old = [[0, 60, 0, 72, 90, 0, 0, 120], [3, 0, 0, 74, 80, 0, 0, 120]]
+        fake.rolls[0] = [list(e) for e in old]
+        fake.params[sysex.TEMPO] = [0x00, 60]               # 60 BPM: 0.5 s = 2 steps
+        fake.params[sysex.pattern_step_address(10, 0)] = [0, 4]
+        fake.drop[sysex.TEMPO] = 1                         # one lost reply, then retried
+        w, panel = self.slice_window(fake)
+        asked = []
+        QMessageBox.question = staticmethod(
+            lambda _p, _t, text, *a, **k: asked.append(text) or QMessageBox.Yes)
+        self.assertTrue(panel.pattern_btn.isEnabled())
+        panel._write_pattern()
+        self.wait_for(lambda: not panel._pattern_busy)
+
+        self.assertIn("Write pattern 1 of the sampler track: 4 notes, one per slice, at "
+                      "60 BPM?", asked[0])
+        self.assertIn("It replaces the 2 notes in it now.", asked[0])
+        self.assertIn("grows from 4 to 16 steps", asked[0])
+        # Slice i plays pad i (note 60 + i) on step 2i, centred, for 0.5 s = 240 ticks.
+        self.assertEqual(fake.roll(), [sysex.roll_note(2 * i * 120 + 60, 60 + i, 100, 240)
+                                       for i in range(4)])
+        self.assertEqual(fake.params[sysex.pattern_step_address(10, 0)], [0, 16])
+        self.assertIn("Pattern 1 written: 4 notes", panel.status.text())
+        self.assertTrue(panel.pattern_undo_btn.isVisibleTo(panel))
+
+        panel._undo_pattern()
+        self.wait_for(lambda: not panel._pattern_busy)
+        self.assertEqual(fake.roll(), old)
+        self.assertEqual(fake.params[sysex.pattern_step_address(10, 0)], [0, 4])
+        self.assertIn("back the way it was", panel.status.text())
+        self.assertFalse(panel.pattern_undo_btn.isVisibleTo(panel))
+
+    def test_write_pattern_refuses_while_playing(self):
+        from PySide6.QtWidgets import QMessageBox
+        fake = FakeSeqtrak()
+        fake.params[sysex.SEQUENCER_STATUS] = [1]
+        fake.rolls[0] = [[0, 60, 0, 72, 90, 0, 0, 120]]
+        w, panel = self.slice_window(fake)
+        QMessageBox.question = staticmethod(lambda *a, **k: self.fail("asked"))
+        panel._write_pattern()
+        self.wait_for(lambda: not panel._pattern_busy)
+        self.assertEqual(panel.status.text(), "Stop the SEQTRAK first, then try again.")
+        self.assertEqual(fake.roll(), [[0, 60, 0, 72, 90, 0, 0, 120]])
+        self.assertFalse(any(m[2] == 0x10 and m[6] == 0x72 for m in fake.sent if len(m) > 9))
+
+    def test_write_pattern_stops_when_the_seqtrak_goes_quiet(self):
+        fake = FakeSeqtrak()
+        fake.drop[sysex.TEMPO] = 99
+        w, panel = self.slice_window(fake)
+        w.device._request_timer.setInterval(20)          # don't wait 4 x 700 ms
+        panel._write_pattern()
+        self.wait_for(lambda: not panel._pattern_busy)
+        self.assertEqual(panel.status.text(), "Couldn't read the tempo.")
+        tempo_asks = [m for m in fake.sent if m[:3] == [0xF0, 0x43, 0x30]
+                      and tuple(m[6:9]) == sysex.TEMPO]
+        self.assertEqual(len(tempo_asks), 4)                # PARAM_ATTEMPTS
 
     def test_read_stored_samples_without_touching_the_pads(self):
         fake = FakeSeqtrak()

@@ -60,3 +60,20 @@ class DeviceRangeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PatternNoteTests(unittest.TestCase):
+    def test_notes_follow_the_slices_at_the_tempo(self):
+        segs = [(1000, 23050), (23050, 45100), (45100, 89200)]   # 0.5, 0.5, 1 s
+        self.assertEqual(slicing.pattern_notes(segs, 44100, 120, [60, 61, 62]),
+                         [(0, 60, 100, 480), (4, 61, 100, 480), (8, 62, 100, 960)])
+
+    def test_steps_round_to_the_nearest_16th(self):
+        segs = [(0, 3000), (3000, 44100)]     # 68 ms in: 0.54 of a 16th at 120 BPM
+        self.assertEqual([n[0] for n in slicing.pattern_notes(segs, 44100, 120, [60, 61])],
+                         [0, 1])
+
+    def test_long_gates_are_capped(self):
+        notes = slicing.pattern_notes([(0, 44100 * 16)], 44100, 300, [60])
+        self.assertEqual(notes[0][3], 0x3FFF)
+        self.assertEqual(slicing.pattern_notes([], 44100, 120, []), [])

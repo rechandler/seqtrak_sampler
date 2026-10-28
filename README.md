@@ -44,6 +44,16 @@ trimming never writes to other pads by accident.
 their recordings stay on the SEQTRAK, so nothing is lost. The app asks before it uses
 pads that already hold a sample. Each pad can be fine-tuned later in Edit mode.
 
+**Write pattern** (experimental) turns the chop into a beat: it writes the sampler
+track's selected pattern with one note per slice, where the slice falls in the sound at
+the SEQTRAK's tempo, held for the slice's length. Slice N plays pad N, so load the
+slices first. The SEQTRAK must be stopped. The app reads the pattern before writing,
+asks before replacing any notes, grows the pattern if the slices need more steps, and
+reads it back to check. **Undo pattern** puts the old notes and length back. Writing
+patterns isn't in Yamaha's Data List; it follows the community reference
+[seqtrak-docs](https://github.com/jaeggerr/seqtrak-docs), which verified it on hardware
+for a synth track but not yet for the sampler.
+
 ### Faster round trips
 
 - **Watch folder:** click **Watch folder…** and pick the folder you export `.Y3S` files

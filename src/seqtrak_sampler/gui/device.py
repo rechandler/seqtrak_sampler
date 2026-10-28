@@ -24,6 +24,10 @@ LOG_SIZE = 1500
 # messages without anyone noticing.
 SEND_PACE_S = 0.002
 STORED_REPLY_MS = 1500   # how long to wait for one stored element's dump
+# A Parameter Request round trip takes ~250 ms and about 1 in 10 is lost
+# (seqtrak-docs, docs/07-transports.md), so wait a while and ask again.
+PARAM_REPLY_MS = 700
+PARAM_ATTEMPTS = 4
 
 # Connection states reported by Device.status
 UNAVAILABLE = "unavailable"    # python-rtmidi isn't installed
@@ -76,6 +80,7 @@ class Device(QObject):
     transportStopped = Signal()
     storedProgress = Signal(int, int)   # done, total
     storedRead = Signal(object)         # list[StoredElement], when a read finishes
+    paramReceived = Signal(object, object)   # address, data: any Parameter Change
     pace = SEND_PACE_S
     _incoming = Signal(object)       # raw MIDI from rtmidi's thread
 
@@ -102,6 +107,13 @@ class Device(QObject):
         self._stored_timer.setSingleShot(True)
         self._stored_timer.setInterval(STORED_REPLY_MS)
         self._stored_timer.timeout.connect(self._next_stored)
+        # Parameter requests, one at a time: [address, callback, attempts left].
+        self._requests: list[list] = []
+        self._request_inflight = False
+        self._request_timer = QTimer(self)
+        self._request_timer.setSingleShot(True)
+        self._request_timer.setInterval(PARAM_REPLY_MS)
+        self._request_timer.timeout.connect(self._request_timed_out)
 
         self._scan_timer = QTimer(self)
         self._scan_timer.setInterval(PORT_SCAN_MS)
@@ -191,6 +203,7 @@ class Device(QObject):
         self._drain_sends()
         if self.reading_stored:
             self._finish_stored()
+        self._fail_requests()
         if self.pads:
             self.pads = {}
             self._osc = {}
@@ -276,6 +289,61 @@ class Device(QObject):
         app = QGuiApplication.instance()
         if app is None or app.applicationState() == Qt.ApplicationActive:
             self.request_pads()
+
+    # Parameter requests
+
+    def request(self, address: tuple[int, int, int], callback,
+                attempts: int = PARAM_ATTEMPTS) -> None:
+        """Read one parameter. `callback(data)` gets its bytes, or None if the SEQTRAK
+        never answered. Requests go one at a time, in order."""
+        if self._out is None:
+            callback(None)
+            return
+        self._requests.append([tuple(address), callback, attempts])
+        if not self._request_inflight:
+            self._send_request()
+
+    def _send_request(self) -> None:
+        if not self._requests:
+            self._request_inflight = False
+            return
+        entry = self._requests[0]
+        entry[2] -= 1
+        self._request_inflight = True
+        self._request_timer.start()      # before sending: the answer may come at once
+        self.send(sysex.parameter_request(entry[0]))
+
+    def _request_timed_out(self) -> None:
+        if not self._requests:
+            return
+        address, callback, left = self._requests[0]
+        if left > 0:
+            self.log.append(f"   no answer for {' '.join(f'{b:02X}' for b in address)}, "
+                            f"asking again")
+            self._send_request()
+            return
+        self._requests.pop(0)
+        self._request_inflight = False
+        callback(None)
+        if not self._request_inflight:
+            self._send_request()
+
+    def _request_answered(self, address: tuple[int, int, int], data: list[int]) -> None:
+        if not self._requests or self._requests[0][0] != address:
+            return
+        self._request_timer.stop()
+        _address, callback, _left = self._requests.pop(0)
+        self._request_inflight = False
+        callback(data)
+        if not self._request_inflight:
+            self._send_request()
+
+    def _fail_requests(self) -> None:
+        self._request_timer.stop()
+        self._request_inflight = False
+        pending, self._requests = self._requests, []
+        for _address, callback, _left in pending:
+            callback(None)
 
     # Stored sampler elements (read-only)
 
@@ -394,6 +462,12 @@ class Device(QObject):
             self.version = version
             if self.state != CONNECTED:
                 self._set_state(CONNECTED, f"OS {version}")
+            return
+        change = sysex.parse_parameter_change(msg)
+        if change is not None:
+            address, data = change
+            self.paramReceived.emit(address, data)
+            self._request_answered(address, data)
             return
         block = sysex.parse_bulk_dump(msg)
         if block is None:
