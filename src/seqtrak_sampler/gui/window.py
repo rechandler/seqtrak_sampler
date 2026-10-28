@@ -245,7 +245,13 @@ class MainWindow(QMainWindow):
         self.log_btn.setToolTip("Copy the recent MIDI messages to the clipboard, to report a "
                                 "problem")
         self.log_btn.clicked.connect(self._copy_midi_log)
+        self.stored_btn = QPushButton("Read stored samples")
+        self.stored_btn.setObjectName("ghost")
+        self.stored_btn.setToolTip("Read (never change) the recordings the SEQTRAK keeps for "
+                                   "each project's pads, to compare with the pads")
+        self.stored_btn.clicked.connect(self._read_stored)
         sidebar_col.addWidget(self.log_btn, 0, Qt.AlignLeft)
+        sidebar_col.addWidget(self.stored_btn, 0, Qt.AlignLeft)
         sidebar_col.addSpacing(10)
         sidebar_col.addWidget(samples_title)
         sidebar_col.addWidget(self.list, 1)
@@ -391,6 +397,8 @@ class MainWindow(QMainWindow):
         self.device.padsChanged.connect(self._pads_changed)
         self.device.transportStarted.connect(self._transport_started)
         self.device.transportStopped.connect(self._transport_stopped)
+        self.device.storedProgress.connect(self._stored_progress)
+        self.device.storedRead.connect(self._stored_read)
         self.recorder.stateChanged.connect(self._recorder_state)
         self.recorder.elapsed.connect(
             lambda s: self.rec_status.setText(f"●  Recording  {s:.1f} s"))
@@ -782,6 +790,7 @@ class MainWindow(QMainWindow):
         if panel is not None:
             panel._refresh()
         self.log_btn.setVisible(state not in (dev.UNAVAILABLE, dev.DISCONNECTED))
+        self.stored_btn.setVisible(state == dev.CONNECTED)
         self.pads_list.setVisible(state == dev.CONNECTED)
         self._update_send_button()
 
@@ -796,6 +805,25 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText("\n".join(header + list(self.device.log)))
         self._show_toast(f"Copied {len(self.device.log)} MIDI log lines. Paste them in a "
                          f"message.")
+
+    def _read_stored(self) -> None:
+        self.stored_btn.setEnabled(False)
+        self.device.read_stored()
+
+    def _stored_progress(self, done: int, total: int) -> None:
+        if done < total:
+            self.stored_btn.setText(f"Reading {done + 1}/{total}…")
+
+    def _stored_read(self, elements: list) -> None:
+        from .stored import StoredDialog, report
+
+        self.stored_btn.setText("Read stored samples")
+        self.stored_btn.setEnabled(True)
+        if not elements:
+            return
+        text = report(elements, self._pads)
+        self.device.log.extend(["", *text.splitlines()])
+        StoredDialog(self, text).exec()
 
     def _pad_state(self, pad: sysex.SamplerPad) -> str:
         if pad.empty:

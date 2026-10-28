@@ -78,11 +78,18 @@ comes alive:
   e.g. after you've changed it on the device. Trimming never deletes audio: the pad keeps
   its whole recording, so nothing is lost.
 
+- **Read stored samples:** reads, without changing anything, the recordings the
+  SEQTRAK keeps for each project's pads (sampler element memory, User 8 programs
+  72-127) and shows them next to what the pads play now. It's a diagnostic: **Copy**
+  the report to share it.
+
 Reading pads and applying trims uses MIDI System Exclusive messages from Yamaha's
-[SEQTRAK Data List](https://data.yamaha.com/files/download/other_assets/5/2226075/SEQTRAK_data_list_En_D0.pdf). Two things to know:
+[SEQTRAK Data List](https://data.yamaha.com/files/download/other_assets/5/2226075/SEQTRAK_data_list_En_D0.pdf). Things to know:
 
 - The SEQTRAK answers SysEx only when its *USB MIDI Transmit System Exclusive* setting
   is on, and it's off by default. If the panel says SysEx is off, click **Enable**.
+- Messages go out 2 ms apart, the pace Yamaha's own app uses (as documented by the
+  community reference [seqtrak-docs](https://github.com/jaeggerr/seqtrak-docs)).
 - On Windows only one app can use the SEQTRAK's MIDI port at a time, so close the
   SEQTRAK app while you use the panel and **Rec on Play**. The **Record** button works
   either way, since it only needs the audio connection.

@@ -28,6 +28,14 @@ BULK_HEADER = 0x11
 BULK_FOOTER = 0x12
 SAMPLER_ELEMENT_EDIT_BUFFER = 0x13
 SOUND_EDIT_BUFFER = 0x02  # 11 02 pp: the sound of part pp, all its elements included
+# 11 14 nn - 11 1B nn: Sampler Element User 1-8, element nn (p. 122). Under Bank
+# Select MSB 62, programs 72-127 of User 8 are "temporary areas for the sampler
+# function: Project 1 Elements 1..7, Project 2 Elements 1..7, ..." (pp. 116-117),
+# i.e. where each project's pad recordings are kept.
+SAMPLER_ELEMENT_USER_1 = 0x14
+TEMPORARY_BANK = 8
+TEMPORARY_FIRST = 72
+PROJECTS = 8
 
 # SAMPLER Sample General block (pp. 152-154), at address 50 eA 00.
 SAMPLE_GENERAL_HI = 0x50
@@ -127,6 +135,25 @@ def pad_request(pad: int) -> list[int]:
 def sampler_sound_request() -> list[int]:
     """Ask for the sampler track's whole sound: every pad's blocks in one dump."""
     return bulk_request(BULK_HEADER, SOUND_EDIT_BUFFER, SAMPLER_PART)
+
+
+def element_request(bank: int, number: int) -> list[int]:
+    """Bulk request for stored sampler element `number` (0-127) of user bank 1-8."""
+    if not 1 <= bank <= 8 or not 0 <= number <= 127:
+        raise ValueError(f"no sampler element user {bank} #{number}")
+    return bulk_request(BULK_HEADER, SAMPLER_ELEMENT_USER_1 + bank - 1, number)
+
+
+def temporary_slot(project: int, pad: int) -> int:
+    """User 8 program that keeps a project's (0-7) pad (0-6) recording."""
+    return TEMPORARY_FIRST + project * SAMPLER_PADS + pad
+
+
+def temporary_slot_owner(number: int) -> tuple[int, int] | None:
+    """(project, pad), both 0-based, for a User 8 temporary-area program number."""
+    if not TEMPORARY_FIRST <= number < TEMPORARY_FIRST + PROJECTS * SAMPLER_PADS:
+        return None
+    return divmod(number - TEMPORARY_FIRST, SAMPLER_PADS)
 
 
 def sample_general_address(pad: int, offset: int = 0) -> tuple[int, int, int]:

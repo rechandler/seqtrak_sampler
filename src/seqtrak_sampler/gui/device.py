@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import queue
+import threading
 import time
 from collections import deque
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
@@ -15,7 +17,13 @@ PORT_SCAN_MS = 2000
 PAD_POLL_MS = 3000
 IDENTITY_TIMEOUT_MS = 2500
 PORT_NAME = "SEQTRAK"
-LOG_SIZE = 400
+LOG_SIZE = 1500
+# The official SEQTRAK app waits 2 ms after every message it sends (per the
+# community reference github.com/jaeggerr/seqtrak-docs, docs/07-transports.md).
+# Parameter changes aren't acknowledged, so a burst that's too fast can lose
+# messages without anyone noticing.
+SEND_PACE_S = 0.002
+STORED_REPLY_MS = 1500   # how long to wait for one stored element's dump
 
 # Connection states reported by Device.status
 UNAVAILABLE = "unavailable"    # python-rtmidi isn't installed
@@ -33,11 +41,42 @@ def _load_rtmidi():
     return rtmidi
 
 
+@dataclass
+class StoredElement:
+    """A sampler element kept in the SEQTRAK's user memory, as read back."""
+    bank: int                        # user bank 1-8
+    number: int                      # 0-127
+    replied: bool = False
+    name: str = ""
+    start: int = 0
+    end: int = 0
+    loop_on: bool = False
+    loop_length: int = 0
+    wave: int | None = None
+    assigned: bool | None = None
+    level: int | None = None
+
+    @property
+    def empty(self) -> bool:
+        return self.end == 0
+
+    @property
+    def label(self) -> str:
+        owner = sysex.temporary_slot_owner(self.number) if self.bank == 8 else None
+        where = f"User {self.bank} #{self.number}"
+        if owner is None:
+            return where
+        return f"Project {owner[0] + 1} pad {owner[1] + 1} ({where})"
+
+
 class Device(QObject):
     status = Signal(str, str)        # state, detail
     padsChanged = Signal(object)     # list[SamplerPad]
     transportStarted = Signal()
     transportStopped = Signal()
+    storedProgress = Signal(int, int)   # done, total
+    storedRead = Signal(object)         # list[StoredElement], when a read finishes
+    pace = SEND_PACE_S
     _incoming = Signal(object)       # raw MIDI from rtmidi's thread
 
     def __init__(self, parent=None, rtmidi=None):
@@ -52,6 +91,17 @@ class Device(QObject):
         self._filt: dict[int, list[int]] = {}
         self.log: deque[str] = deque(maxlen=LOG_SIZE)
         self._incoming.connect(self._handle)
+        self._sendq: queue.Queue = queue.Queue()
+        self._sender: threading.Thread | None = None
+        self._bulk: tuple[int, int] | None = None     # (mm, nn) of the open bulk header
+        self._stored_todo: list[tuple[int, int]] = []
+        self._stored: list[StoredElement] = []
+        self._stored_total = 0
+        self._stored_current: StoredElement | None = None
+        self._stored_timer = QTimer(self)
+        self._stored_timer.setSingleShot(True)
+        self._stored_timer.setInterval(STORED_REPLY_MS)
+        self._stored_timer.timeout.connect(self._next_stored)
 
         self._scan_timer = QTimer(self)
         self._scan_timer.setInterval(PORT_SCAN_MS)
@@ -138,6 +188,9 @@ class Device(QObject):
         self._in = self._out = None
         self._port_name = None
         self._identity_timer.stop()
+        self._drain_sends()
+        if self.reading_stored:
+            self._finish_stored()
         if self.pads:
             self.pads = {}
             self._osc = {}
@@ -154,9 +207,52 @@ class Device(QObject):
         self.log.append(f"{stamp} {direction} {text}{'  ' + note if note else ''}")
 
     def send(self, msg: list[int]) -> None:
-        if self._out is not None:
-            self._log("->", msg)
+        """Send a message. Messages go out in order, `pace` seconds apart, from a
+        background thread, so a long burst doesn't freeze the window."""
+        if self._out is None:
+            return
+        self._log("->", msg)
+        if self.pace <= 0:
             self._out.send_message(msg)
+            return
+        if self._sender is None or not self._sender.is_alive():
+            self._sender = threading.Thread(target=self._send_loop, name="seqtrak-send",
+                                            daemon=True)
+            self._sender.start()
+        self._sendq.put((self._out, msg))
+
+    def _send_loop(self) -> None:
+        while True:
+            out, msg = self._sendq.get()
+            try:
+                out.send_message(msg)
+            except Exception:   # the port was closed under us; nothing to do
+                pass
+            finally:
+                self._sendq.task_done()
+            time.sleep(self.pace)
+
+    @property
+    def sending(self) -> int:
+        """Messages still waiting to go out."""
+        return self._sendq.unfinished_tasks
+
+    def flush(self, timeout: float = 10.0) -> bool:
+        """Wait until every queued message has been sent. True if it got there."""
+        deadline = time.monotonic() + timeout
+        while self._sendq.unfinished_tasks:
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(0.001)
+        return True
+
+    def _drain_sends(self) -> None:
+        while True:
+            try:
+                self._sendq.get_nowait()
+            except queue.Empty:
+                return
+            self._sendq.task_done()
 
     def enable_sysex(self) -> None:
         """Turn on the SEQTRAK's "USB MIDI Transmit System Exclusive" setting."""
@@ -173,9 +269,82 @@ class Device(QObject):
     def _poll(self) -> None:
         # Only poll while this app is in front: in the background the user may be
         # importing in the SEQTRAK app, and our requests could get in its way.
+        # Not while reading stored elements either: their dumps use pad 1's
+        # addresses, so pad replies mixed in would be ambiguous.
+        if self.reading_stored or self.sending:
+            return
         app = QGuiApplication.instance()
         if app is None or app.applicationState() == Qt.ApplicationActive:
             self.request_pads()
+
+    # Stored sampler elements (read-only)
+
+    @property
+    def reading_stored(self) -> bool:
+        return self._stored_current is not None or bool(self._stored_todo)
+
+    def read_stored(self, slots: list[tuple[int, int]] | None = None) -> None:
+        """Read stored sampler elements one by one, (bank, number) each; by default
+        every project's pad recordings (User 8, 72-127). Emits storedRead at the end."""
+        if self.state != CONNECTED or self.reading_stored:
+            return
+        if slots is None:
+            slots = [(sysex.TEMPORARY_BANK, sysex.temporary_slot(project, pad))
+                     for project in range(sysex.PROJECTS) for pad in range(sysex.SAMPLER_PADS)]
+        self._stored_todo = list(slots)
+        self._stored = []
+        self._stored_total = len(slots)
+        self.log.append(f"{time.strftime('%H:%M:%S')} reading {len(slots)} stored elements")
+        self._next_stored()
+
+    def _next_stored(self) -> None:
+        if self._stored_current is not None:
+            self._stored.append(self._stored_current)
+            self._stored_current = None
+        self._bulk = None
+        self.storedProgress.emit(len(self._stored), self._stored_total)
+        if not self._stored_todo:
+            self._finish_stored()
+            return
+        bank, number = self._stored_todo.pop(0)
+        self._stored_current = StoredElement(bank, number)
+        self.send(sysex.element_request(bank, number))
+        self._stored_timer.start()
+
+    def _finish_stored(self) -> None:
+        self._stored_timer.stop()
+        if self._stored_current is not None:
+            self._stored.append(self._stored_current)
+        self._stored_current = None
+        self._stored_todo = []
+        result, self._stored = self._stored, []
+        self.storedRead.emit(result)
+
+    def _stored_block(self, block: sysex.BulkBlock) -> bool:
+        """Take a block that belongs to the stored element being read. True if taken."""
+        element = self._stored_current
+        if element is None or (self._bulk is not None and self._bulk[0] in (
+                sysex.SAMPLER_ELEMENT_EDIT_BUFFER, sysex.SOUND_EDIT_BUFFER)):
+            return False
+        hi, mid, _lo = block.address
+        if mid & 0x0F != sysex.SAMPLER_PART:
+            return False
+        if hi == sysex.OSCILLATOR_HI:
+            osc = sysex.pad_oscillator_from_block(block)
+            if osc is not None:
+                element.wave, element.assigned = osc.wave, osc.assigned
+                element.level = osc.data[0x2E] if len(osc.data) > 0x2E else None
+        elif hi == sysex.SAMPLE_GENERAL_HI:
+            try:
+                general = sysex.parse_sample_general(0, block.data)
+            except ValueError:
+                return True
+            element.name, element.start, element.end = general.name, general.start, general.end
+            element.loop_on, element.loop_length = general.loop_on, general.loop_length
+        elif hi != sysex.FILTER_HI:
+            return False
+        element.replied = True
+        return True
 
     def play_note(self, note: int, seconds: float) -> None:
         """Hold a sampler note for `seconds` (sampler pads default to gate mode)."""
@@ -229,6 +398,21 @@ class Device(QObject):
         block = sysex.parse_bulk_dump(msg)
         if block is None:
             self.log.append(f"   ignored: {sysex.bulk_dump_problem(msg)}")
+            return
+        hi, mid, lo = block.address
+        if hi == sysex.BULK_HEADER:
+            self._bulk = (mid, lo)
+            return
+        if hi == sysex.BULK_FOOTER:
+            self._bulk = None
+            element = self._stored_current
+            if element is not None and mid == sysex.SAMPLER_ELEMENT_USER_1 + element.bank - 1 \
+                    and lo == element.number:
+                element.replied = True
+                self._stored_timer.stop()
+                QTimer.singleShot(0, self._next_stored)
+            return
+        if self._stored_block(block):
             return
         osc = sysex.pad_oscillator_from_block(block)
         if osc is not None:

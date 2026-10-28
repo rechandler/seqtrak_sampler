@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 import unittest
 from array import array
 from pathlib import Path
@@ -47,6 +48,9 @@ class FakeSeqtrak:
         self.callback = None
         self.sent: list[list[int]] = []
         self.changes: list[tuple[int, int, int]] = []   # (pad, block, offset) changed
+        # Stored sampler elements, (bank, number) -> dict(name, start, end, wave).
+        self.stored: dict[tuple[int, int], dict] = {}
+        self.silent: set[tuple[int, int]] = set()    # elements that never answer
 
     def reply(self, msg):
         if self.callback and self.sysex_on:
@@ -64,11 +68,27 @@ class FakeSeqtrak:
         elif msg[:9] == sysex.pad_request(msg[8])[:9] and len(msg) == 10:
             pad = msg[8]
             p = self.pad(pad)
+            self.reply(bulk_dump((0x11, 0x13, pad), []))
             self.reply(bulk_dump(sysex.oscillator_address(pad, 0), p["osc"]))
             self.reply(bulk_dump((sysex.FILTER_HI, (pad << 4) | 0x0A, 0x00), p["filt"]))
             self.reply(bulk_dump(sysex.sample_general_address(pad),
                                  sample_general(p["name"], p["start"], p["end"],
                                                 int(p["loop_on"]), p["loop_length"])))
+            self.reply(bulk_dump((0x12, 0x13, pad), []))
+        elif len(msg) == 10 and msg[2] == 0x20 and msg[6] == 0x11 and 0x14 <= msg[7] <= 0x1B:
+            # A stored element: its blocks come at element 0's addresses (p. 120).
+            key = (msg[7] - 0x13, msg[8])
+            if key in self.silent:
+                return
+            e = self.stored.get(key, dict(name="", start=0, end=0, wave=0))
+            osc = list(USED_OSC)
+            osc[sysex.WAVE_NUMBER:sysex.WAVE_NUMBER + 2] = [e["wave"] >> 7, e["wave"] & 0x7F]
+            self.reply(bulk_dump((0x11, msg[7], msg[8]), []))
+            self.reply(bulk_dump(sysex.oscillator_address(0, 0), osc))
+            self.reply(bulk_dump((sysex.FILTER_HI, 0x0A, 0x00), list(USED_FILTER)))
+            self.reply(bulk_dump(sysex.sample_general_address(0),
+                                 sample_general(e["name"], e["start"], e["end"], 0, e["end"])))
+            self.reply(bulk_dump((0x12, msg[7], msg[8]), []))
         elif msg[2] == 0x10 and msg[6] in (sysex.OSCILLATOR_HI, sysex.FILTER_HI):
             p, offset, data = self.pad(msg[7] >> 4), msg[8], msg[9:-1]
             block = p["osc"] if msg[6] == sysex.OSCILLATOR_HI else p["filt"]
@@ -164,6 +184,10 @@ class DevicePanelTests(unittest.TestCase):
 
         dev.Device.__init__ = init
         self.addCleanup(setattr, dev.Device, "__init__", real)
+        # Send synchronously, so the fake answers before the next line of the test;
+        # test_sends_are_paced covers the paced sender.
+        self.addCleanup(setattr, dev.Device, "pace", dev.Device.pace)
+        dev.Device.pace = 0
         w = window.MainWindow()
         w.settings.clear()
         w._latencies = []
@@ -356,6 +380,66 @@ class DevicePanelTests(unittest.TestCase):
         self.assertEqual(fake.pads[2]["osc"], restored)
         self.assertEqual(fake.pads[2]["filt"], empty_filt)
         self.assertEqual(fake.pads[1]["level"], 100)
+
+    def test_read_stored_samples_without_touching_the_pads(self):
+        fake = FakeSeqtrak()
+        fake.pads = {0: dict(name="Resample-8-1", start=0, end=88207),
+                     3: dict(name="Resample-8-1 4", start=44100, end=88207, wave=400)}
+        fake.stored = {(8, 72): dict(name="Resample-8-1", start=0, end=88207, wave=400),
+                       (8, 80): dict(name="Vox", start=0, end=44111, wave=401)}
+        fake.silent = {(8, 127)}
+        w = self.make_window(fake)
+        from seqtrak_sampler.gui import stored as stored_mod
+        shown = []
+        self.addCleanup(setattr, stored_mod.StoredDialog, "exec", stored_mod.StoredDialog.exec)
+        stored_mod.StoredDialog.exec = lambda dialog: shown.append(dialog.text.toPlainText())
+        self.assertTrue(w.stored_btn.isVisibleTo(w))
+        before = w._pads[0]
+        got = []
+        w.device.storedRead.connect(got.append)
+        w.device.read_stored()
+        deadline = time.monotonic() + 5
+        while not got and time.monotonic() < deadline:   # the silent slot times out
+            self.app.processEvents()
+            time.sleep(0.01)
+        elements = got[0]
+        self.assertEqual(len(elements), 56)
+        self.assertEqual(w._pads[0], before)          # element 0 addresses, not pad 1
+        first = elements[0]
+        self.assertEqual((first.label, first.name, first.wave, first.end),
+                         ("Project 1 pad 1 (User 8 #72)", "Resample-8-1", 400, 88207))
+        self.assertEqual(elements[8].label, "Project 2 pad 2 (User 8 #80)")
+        self.assertFalse(elements[-1].replied)
+        self.assertTrue(elements[1].replied and elements[1].empty)
+        self.assertFalse(w.device.reading_stored)
+
+        from seqtrak_sampler.gui.stored import report
+        text = report(elements, w._pads)
+        self.assertIn("Project 1 pad 1 (User 8 #72): 'Resample-8-1', wave 400", text)
+        self.assertIn("Project 2 pad 2 (User 8 #80): 'Vox', wave 401", text)
+        self.assertIn("Empty: 53. No reply: 1 (#127).", text)
+        self.assertIn("Pad 4: 'Resample-8-1 4', wave 400, 1.00-2.00 s, level 100; same "
+                      "recording as Project 1 pad 1 (User 8 #72) 'Resample-8-1'", text)
+        self.assertIn("Pad 2: empty", text)
+        self.assertEqual(shown, [text])               # what the window showed
+        self.assertIn("Pad 2: empty", "\n".join(w.device.log))
+
+    def test_sends_are_paced(self):
+        from seqtrak_sampler.gui import device as dev
+        fake = FakeSeqtrak()
+        device = dev.Device(rtmidi=fake.module())
+        device.pace = 0.002
+        device._out = fake.module().MidiOut()
+        msgs = [sysex.note_on(60 + i % 7) for i in range(50)]
+        started = time.monotonic()
+        for m in msgs:
+            device.send(m)
+        queued = time.monotonic() - started
+        self.assertTrue(device.flush())
+        self.assertLess(queued, 0.05)                 # the caller isn't held up
+        self.assertGreaterEqual(time.monotonic() - started, 49 * 0.002)
+        self.assertEqual(fake.sent, msgs)             # in order
+        self.assertEqual(device.sending, 0)
 
     def test_note_messages_play_the_pad(self):
         fake = FakeSeqtrak()
