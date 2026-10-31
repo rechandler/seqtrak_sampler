@@ -1,4 +1,4 @@
-"""Plays a region of a stereo sound through the default output device."""
+"""Plays a region of a stereo sound through the chosen (or default) output device."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ class Player(QObject):
         self._offset = 0
         self._rate = 44100
         self.device_name = ""      # the output the last sound went to
+        self.output_id: bytes | None = None   # chosen output; None = system default
         self._timer = QTimer(self)
         self._timer.setInterval(30)
         self._timer.timeout.connect(self._tick)
@@ -33,7 +34,7 @@ class Player(QObject):
     def play(self, left: array, right: array, rate: int, offset: int) -> None:
         """Play the given frames; `offset` is their position in the full sound."""
         self.stop()
-        device = QMediaDevices.defaultAudioOutput()
+        device = self.output()
         if device.isNull():
             raise RuntimeError("no audio output device found")
         self.device_name = device.description()
@@ -49,6 +50,14 @@ class Player(QObject):
         self._offset, self._rate = offset, rate
         self._sink.start(self._buffer)
         self._timer.start()
+
+    def output(self):
+        """The chosen output if it's still there, else the system default."""
+        if self.output_id is not None:
+            for device in QMediaDevices.audioOutputs():
+                if bytes(device.id()) == self.output_id:
+                    return device
+        return QMediaDevices.defaultAudioOutput()
 
     def stop(self) -> None:
         if self._sink is None:
@@ -80,8 +89,3 @@ class Player(QObject):
                 self.failed.emit(f"Couldn't play through {self.device_name or 'the output'} "
                                  f"({name}).")
 
-
-def through_seqtrak(device_name: str) -> bool:
-    """Is this output the SEQTRAK itself? (Windows often makes it the default when it's
-    plugged in, so previews come out of the SEQTRAK rather than the computer.)"""
-    return "SEQTRAK" in device_name.upper()

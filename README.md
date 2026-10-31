@@ -63,6 +63,13 @@ melodically: every pad gets the same sample, each tuned to a note of a scale.
    its own tuning (Coarse Tune), named "Source C3", "Source D3", … No audio is copied.
    **Undo** puts every pad back.
 
+### Where you hear it
+
+**Listen on**, in the footer, picks where Play and pad previews sound: your computer's
+default output or any other, such as the SEQTRAK itself to hear them on headphones
+plugged into it. The choice is remembered; if that output is unplugged, sound goes to
+the default.
+
 ### Faster round trips
 
 - **Watch folder:** click **Watch folder…** and pick the folder you export `.Y3S` files

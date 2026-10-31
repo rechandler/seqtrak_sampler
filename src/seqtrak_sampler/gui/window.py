@@ -11,8 +11,9 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
+from PySide6.QtMultimedia import QMediaDevices
 from PySide6.QtWidgets import (
-    QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QStackedWidget, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+    QButtonGroup, QComboBox, QFileDialog, QFrame, QHBoxLayout, QStackedWidget, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -22,7 +23,7 @@ from ..y3s import read_y3s
 from . import device as dev
 from . import theme
 from .device import Device
-from .player import Player, through_seqtrak
+from .player import Player
 from .keys_mode import KeysPanel
 from .slice_mode import SlicePanel
 from .recorder import Recorder
@@ -363,6 +364,19 @@ class MainWindow(QMainWindow):
         show_btn = QPushButton("Show")
         show_btn.setObjectName("ghost")
         show_btn.clicked.connect(self._show_output)
+        listen_on = QLabel("Listen on")
+        listen_on.setObjectName("muted")
+        self.listen_box = QComboBox()
+        self.listen_box.setToolTip("Where Play and pad previews sound, e.g. the SEQTRAK to "
+                                   "hear them on headphones plugged into it")
+        self.listen_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.listen_box.setMinimumContentsLength(16)
+        self.listen_box.activated.connect(self._listen_chosen)
+        saved = self.settings.value("listen_on", "")
+        self.player.output_id = bytes.fromhex(saved) if saved else None
+        self._media = QMediaDevices(self)
+        self._media.audioOutputsChanged.connect(self._fill_listen_box)
+        self._fill_listen_box()
         self.toast = QLabel()
         self.toast.setObjectName("toast")
         self._toast_timer = QTimer(self)
@@ -386,6 +400,9 @@ class MainWindow(QMainWindow):
         footer.addWidget(self.output_label)
         footer.addWidget(change_btn)
         footer.addWidget(show_btn)
+        footer.addSpacing(16)
+        footer.addWidget(listen_on)
+        footer.addWidget(self.listen_box)
         footer.addStretch()
         footer.addWidget(self.toast)
         footer.addSpacing(8)
@@ -649,9 +666,26 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Can't play", str(e))
             return
         self.play_btn.setIcon(stop_icon())
-        if through_seqtrak(self.player.device_name):
-            self._show_toast("Playing through the SEQTRAK (it's the computer's sound "
-                             "output). Pick your speakers to hear it on the computer.")
+
+    # Where sound plays
+
+    def _fill_listen_box(self) -> None:
+        box = self.listen_box
+        box.clear()
+        default = QMediaDevices.defaultAudioOutput()
+        box.addItem(f"System default ({default.description()})" if not default.isNull()
+                    else "System default", None)
+        for device in QMediaDevices.audioOutputs():
+            box.addItem(device.description(), bytes(device.id()).hex())
+        chosen = self.player.output_id.hex() if self.player.output_id else None
+        index = next((i for i in range(box.count()) if box.itemData(i) == chosen), 0)
+        box.setCurrentIndex(index)
+
+    def _listen_chosen(self, index: int) -> None:
+        chosen = self.listen_box.itemData(index)
+        self.player.stop()
+        self.player.output_id = bytes.fromhex(chosen) if chosen else None
+        self.settings.setValue("listen_on", chosen or "")
 
     # Export
 

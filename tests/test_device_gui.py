@@ -21,8 +21,9 @@ from seqtrak_sampler import keys, sysex
 
 try:
     from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtMultimedia import QMediaDevices
 except ImportError:
-    Qt = QTimer = None
+    Qt = QTimer = QMediaDevices = None
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_sysex import bulk_dump, sample_general  # noqa: E402
@@ -600,18 +601,33 @@ class DevicePanelTests(unittest.TestCase):
             player.device_name = name
         player.play = play
         panel._play_pad(2)
-        self.assertEqual(panel.status.text(),
-                         "▶  Pad 3: E3 (+4 st) through Speakers (Realtek)")
+        self.assertEqual(panel.status.text(), "▶  Pad 3: E3 (+4 st) on Speakers (Realtek)")
         player.play = lambda *a: play(*a, name="SEQTRAK")
         panel._play_pad(0)
-        self.assertIn("through SEQTRAK. That's the SEQTRAK, so it plays there",
-                      panel.status.text())
+        self.assertEqual(panel.status.text(), "▶  Pad 1: C3 (+0 st) on SEQTRAK")
 
         def broken(*a):
             raise RuntimeError("no audio output device found")
         player.play = broken
         panel._play_pad(0)
         self.assertEqual(panel.status.text(), "Can't play: no audio output device found.")
+
+    def test_listen_on_is_remembered_and_falls_back_to_default(self):
+        fake = FakeSeqtrak()
+        w = self.make_window(fake)
+        box = w.listen_box
+        self.assertEqual(box.itemData(0), None)              # System default comes first
+        self.assertTrue(box.itemText(0).startswith("System default"))
+        box.addItem("SEQTRAK", b"seq-id".hex())              # as if it were plugged in
+        w._listen_chosen(box.count() - 1)
+        self.assertEqual(w.player.output_id, b"seq-id")
+        self.assertEqual(w.settings.value("listen_on"), b"seq-id".hex())
+        # Unplugged: the chosen output isn't listed, so sound goes to the default.
+        self.assertEqual(bytes(w.player.output().id()),
+                         bytes(QMediaDevices.defaultAudioOutput().id()))
+        w._listen_chosen(0)
+        self.assertIsNone(w.player.output_id)
+        self.assertEqual(w.settings.value("listen_on"), "")
 
     def test_keys_with_a_chosen_scale_and_range_check(self):
         fake = FakeSeqtrak()
