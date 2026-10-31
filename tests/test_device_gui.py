@@ -20,9 +20,9 @@ except ImportError:  # the CI test job runs without the GUI extras
 from seqtrak_sampler import sysex
 
 try:
-    from PySide6.QtCore import QTimer
+    from PySide6.QtCore import Qt, QTimer
 except ImportError:
-    QTimer = None
+    Qt = QTimer = None
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_sysex import bulk_dump, sample_general  # noqa: E402
@@ -469,6 +469,52 @@ class DevicePanelTests(unittest.TestCase):
         self.assertEqual(fake.params[sysex.pattern_step_address(10, 0)], [0, 4])
         self.assertIn("back the way it was", panel.status.text())
         self.assertFalse(panel.pattern_undo_btn.isVisibleTo(panel))
+
+    def test_write_pattern_reports_notes_stored_differently(self):
+        from PySide6.QtWidgets import QMessageBox
+        fake = FakeSeqtrak()
+        w, panel = self.slice_window(fake)
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+        receive = fake.receive
+
+        def squash_times(msg):          # a SEQTRAK that puts every note at time 0
+            if msg[2] == 0x10 and msg[6] == 0x72:
+                msg = msg[:9] + [0, 0] + msg[11:]
+            receive(msg)
+        fake.receive = squash_times
+        panel._write_pattern()
+        self.wait_for(lambda: not panel._pattern_busy)
+        self.assertIn("stored 4 notes differently from the 4 sent", panel.status.text())
+        log = "\n".join(w.device.log)
+        self.assertIn("pattern sent: step 1 note 60 gate 480 (time 60); step 5 note 61", log)
+        self.assertIn("pattern stored: step 1-60 note 60 gate 480 (time 0)", log)
+        self.assertTrue(panel.pattern_undo_btn.isVisibleTo(panel))   # Undo still possible
+
+    def test_cuts_stop_at_seven_segments(self):
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QMouseEvent
+        fake = FakeSeqtrak()
+        w, panel = self.slice_window(fake)
+        panel._split(7)
+        wave = panel.wave
+        wave.resize(700, 200)
+        before = wave.markers()
+
+        def click(x):
+            pos = QPointF(x, 100)
+            for kind in (QMouseEvent.MouseButtonPress, QMouseEvent.MouseButtonRelease):
+                wave.event(QMouseEvent(kind, pos, pos, Qt.LeftButton, Qt.LeftButton,
+                                       Qt.NoModifier))
+        click(30)
+        self.assertEqual(wave.markers(), before)
+        self.assertEqual(panel.count(), 7)
+        self.assertIn("7 segments is the most", panel.status.text())
+        # Shrinking the region drops the cuts outside it, so growing it back can't
+        # bring the count over 7.
+        start, end = panel._region()
+        wave.set_region(start, (start + end) // 2)
+        wave.regionChanged.emit(start, (start + end) // 2)
+        self.assertLessEqual(len(wave.markers()), 3)
 
     def test_write_pattern_refuses_while_playing(self):
         from PySide6.QtWidgets import QMessageBox

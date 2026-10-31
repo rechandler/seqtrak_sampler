@@ -31,6 +31,7 @@ def _peaks(frames: array, buckets: int) -> tuple[list[int], list[int]]:
 class WaveformView(QWidget):
     regionChanged = Signal(int, int)
     markersChanged = Signal(object)  # list[int], in slice mode
+    markerRefused = Signal()         # a click would have made more than max_markers
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -49,6 +50,7 @@ class WaveformView(QWidget):
         self._slicing = False
         self._markers: list[int] = []
         self._drag_marker: int | None = None  # index into _markers
+        self.max_markers: int | None = None   # cuts allowed inside the region
 
     def set_sound(self, left: array, right: array, rate: int, start: int, end: int) -> None:
         self._channels = [_peaks(left, PEAK_BUCKETS), _peaks(right, PEAK_BUCKETS)]
@@ -314,6 +316,10 @@ class WaveformView(QWidget):
             if i is None:
                 frame = self._frame(x)
                 if not self._start < frame < self._end:
+                    return
+                inside = sum(self._start < m < self._end for m in self._markers)
+                if self.max_markers is not None and inside >= self.max_markers:
+                    self.markerRefused.emit()
                     return
                 self._markers.append(frame)
                 self._markers.sort()

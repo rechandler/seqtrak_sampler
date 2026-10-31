@@ -104,6 +104,32 @@ class PatternWriter(QObject):
         self._replace(info.pattern, info.steps, info.events, done,
                       f"Pattern {info.pattern + 1} is back the way it was")
 
+    def _read_back(self, stored: list[list[int]], expected: int, done) -> None:
+        """Read events from index len(stored) on, until an empty answer (or a few past
+        `expected`). done(events), or done(None) if the SEQTRAK went quiet."""
+        index = len(stored)
+
+        def got(data):
+            if data is None:
+                return done(None)
+            if len(data) < 8 or index > expected + 4:
+                return done(stored)
+            stored.append(list(data[:8]))
+            self._read_back(stored, expected, done)
+
+        self.device.request(sysex.roll_address(0x75, self.block, index), got)
+
+    def _log(self, label: str, events: list[list[int]]) -> None:
+        def describe(e):
+            time, gate = (e[0] << 7) | e[1], (e[6] << 7) | e[7]
+            # Step numbers from 1, with the offset from the step's centre in ticks.
+            step, into = divmod(time, sysex.TICKS_PER_STEP)
+            offset = into - sysex.TICKS_PER_STEP // 2
+            where = f"step {step + 1}" + (f"{offset:+d}" if offset else "")
+            return f"{where} note {e[3]} gate {gate} (time {time})"
+        self.device.log.append(f"   pattern {label}: " +
+                               ("; ".join(describe(e) for e in events) or "no notes"))
+
     def _replace(self, pattern: int, steps: int, events: list[list[int]], done,
                  success: str) -> None:
         def status(data):
@@ -121,23 +147,19 @@ class PatternWriter(QObject):
                 sysex.pattern_step_address(self.part, pattern), [steps >> 7, steps & 0x7F]))
             for event in events:
                 self.device.send(sysex.roll_add(self.block, event))
-            # Check the count: the last event is there and nothing follows it.
-            if events:
-                self.device.request(sysex.roll_address(0x75, self.block, len(events) - 1),
-                                    last)
-            else:
-                last([0] * 8)
+            # Read every event back and compare: the count, and each note's bytes.
+            self._read_back([], len(events), lambda stored: check(stored))
 
-        def last(data):
-            if data is None or len(data) < 8:
-                return done(False, f"Wrote {len(events)} notes, but the SEQTRAK doesn't "
-                                   f"report them all. Copy the MIDI log and send it.")
-            self.device.request(sysex.roll_address(0x75, self.block, len(events)), after)
-
-        def after(data):
-            if data is None or len(data) >= 8:
-                return done(False, f"Wrote {len(events)} notes, but the pattern holds "
-                                   f"more than that. Copy the MIDI log and send it.")
+        def check(stored):
+            if stored is None:
+                return done(False, "The SEQTRAK stopped answering while the pattern was "
+                                   "read back. Copy the MIDI log and send it.")
+            self._log("sent", events)
+            self._log("stored", stored)
+            if stored != events:
+                return done(False, f"The SEQTRAK stored {len(stored)} notes differently "
+                                   f"from the {len(events)} sent (details in the MIDI log). "
+                                   f"Copy the MIDI log and send it.")
             done(True, success)
 
         self.device.request(sysex.SEQUENCER_STATUS, status)

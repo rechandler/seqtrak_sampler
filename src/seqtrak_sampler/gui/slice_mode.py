@@ -139,6 +139,10 @@ class SlicePanel(QWidget):
         self.wave.set_slicing(True)
         self.wave.regionChanged.connect(self._region_changed)
         self.wave.markersChanged.connect(lambda _m: self._refresh())
+        self.wave.max_markers = slicing.MAX_SLICES - 1     # 7 segments, one per pad
+        self.wave.markerRefused.connect(lambda: self.status.setText(
+            f"{slicing.MAX_SLICES} segments is the most: one per pad. Move or remove a "
+            f"cut (right-click) to make another."))
 
         seg_label = QLabel("Segments")
         seg_label.setObjectName("muted")
@@ -272,7 +276,7 @@ class SlicePanel(QWidget):
         if self.source is None:
             return []
         start, end = self._region()
-        return slicing.slices(start, end, self.wave.markers())
+        return slicing.slices(start, end, self.wave.markers())[:slicing.MAX_SLICES]
 
     def count(self) -> int:
         return len(self.segments())
@@ -297,6 +301,12 @@ class SlicePanel(QWidget):
         self._refresh()
 
     def _region_changed(self, start: int, end: int) -> None:
+        # Cuts outside the region don't make segments; dropping them keeps the
+        # 7-segment cap true when the region grows again.
+        markers = self.wave.markers()
+        inside = [m for m in markers if start < m < end]
+        if inside != markers:
+            self.wave.set_markers(inside)
         self._refresh()
 
     def _play_segment(self, pad: int) -> None:
@@ -437,8 +447,9 @@ class SlicePanel(QWidget):
         self.writer.write(info, fits, lambda ok, msg: self._pattern_done(info, ok, msg))
 
     def _pattern_done(self, info: PatternInfo, ok: bool, message: str) -> None:
+        # Keep the backup even when the check failed: notes may have been written.
+        self._pattern_backup = info
         if ok:
-            self._pattern_backup = info
             message = f"✓  {message}. Press Play on the SEQTRAK."
         self.status.setText(message)
         self._pattern_running(False)
