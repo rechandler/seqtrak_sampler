@@ -299,6 +299,59 @@ class DevicePanelTests(unittest.TestCase):
         self.assertEqual(reopened, [(1, 1000, 89199)])
         self.assertNotIn(take, w.takes)
 
+    def test_tuned_pad_is_recorded_untuned_then_retuned(self):
+        fake = FakeSeqtrak()
+        fake.pads[1] = dict(name="Deep", start=0, end=110249)     # 2.5 s
+        w = self.make_window(fake)
+        fake.pads[1]["osc"][sysex.COARSE_TUNE] = 64 - 24             # two octaves down
+        fake.pads[1]["osc"][sysex.FINE_TUNE] = 70
+        w.device.request_pads()
+
+        class StubRecorder:                     # no audio input on the test machine
+            state = "idle"
+
+            def start_take(self):
+                self.state = "recording"
+
+            def stop_take(self):
+                self.state = "idle"
+
+            def frames_recorded(self):
+                return 0
+        self.addCleanup(setattr, w, "recorder", w.recorder)   # back before close()
+        w.recorder = StubRecorder()
+        tuning_during = []
+        receive = fake.receive
+
+        def watch(msg):                          # the pad's tuning when its note plays
+            if msg[0] == 0x99 + 1:
+                tuning_during.append((fake.pads[1]["osc"][sysex.COARSE_TUNE],
+                                      fake.pads[1]["osc"][sysex.FINE_TUNE]))
+            receive(msg)
+        fake.receive = watch
+        self.assertTrue(w.open_pad(w._pads[1]))
+        self.wait_for(lambda: tuning_during, seconds=2)
+        self.assertEqual(tuning_during, [(64, 64)])
+        self.assertEqual(w._pads[1].seconds, 2.5)               # held for the real length
+        sound = array("h", [0] * 900 + [4000] * 110250 + [0] * 4000)
+        w._recorded(sound, array("h", sound), 44100)
+        self.assertEqual((fake.pads[1]["osc"][sysex.COARSE_TUNE],
+                          fake.pads[1]["osc"][sysex.FINE_TUNE]), (40, 70))
+        self.assertEqual(w.current().end, 110250)               # the whole sample
+
+    def test_untuned_pad_gets_no_tuning_messages(self):
+        fake = FakeSeqtrak()
+        w = self.make_window(fake)
+        self.addCleanup(setattr, w, "recorder", w.recorder)
+        w.recorder = type("R", (), {"state": "idle", "frames_recorded": lambda s: 0,
+                                    "stop_take": lambda s: None,
+                                    "start_take": lambda s: setattr(s, "state", "recording")})()
+        before = len(fake.sent)
+        self.assertTrue(w.open_pad(w._pads[0]))
+        self.assertFalse(any(len(m) > 9 and m[6] == sysex.OSCILLATOR_HI
+                             for m in fake.sent[before:]))
+        self.assertEqual(w._capture_restore, [])
+
     def test_leading_silence_is_kept_and_aligned(self):
         from PySide6.QtWidgets import QMessageBox
         fake = FakeSeqtrak()
@@ -519,12 +572,15 @@ class DevicePanelTests(unittest.TestCase):
         panel.scale_box.setCurrentText("Major")
         panel._scale_chosen()
         self.assertEqual(panel.source_tuning(), 20)
-        self.assertIn("tuned +20 st on the SEQTRAK now", panel.status.text())
+        self.assertIn("tuned +20 st on the SEQTRAK. The app records it untuned",
+                      panel.status.text())
         self.assertTrue(panel.load_btn.isEnabled())          # 20 + 11 would be past 24
         played = []
         w.player.play = lambda left, *a: played.append(len(left))
-        panel._play_pad(0)                                    # C3 from a sound 20 st up
-        self.assertEqual(played, [len(keys.repitch(panel.source.left, -20))])
+        panel._play_pad(0)                                    # C3: the untuned recording
+        panel._play_pad(4)                                    # G3: 7 st up
+        self.assertEqual(played, [len(panel.source.left),
+                                  len(keys.repitch(panel.source.left, 7))])
         QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
         for _ in range(2):                                    # loading twice: same pads
             panel._load()

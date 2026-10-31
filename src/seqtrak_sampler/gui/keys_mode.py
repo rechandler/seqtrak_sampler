@@ -127,11 +127,9 @@ class KeysPanel(PadPanel):
 
     def source_tuning(self) -> int:
         """Semitones the source pad is tuned by on the SEQTRAK now (0 = as recorded).
-        The captured sound includes it."""
+        The app records pads untuned, so the captured sound doesn't include it."""
         pad = self.source_pad()
-        if pad is None or pad.osc is None or len(pad.osc) <= sysex.COARSE_TUNE:
-            return 0
-        return pad.osc[sysex.COARSE_TUNE] - sysex.COARSE_CENTER
+        return 0 if pad is None else sysex.tuning(pad)[0] - sysex.COARSE_CENTER
 
     def _scale_chosen(self, _index: int = 0) -> None:
         project = self.using_project_scale()
@@ -220,15 +218,15 @@ class KeysPanel(PadPanel):
         tuned = self.source_tuning() if has_source else 0
         if tuned and not self.status.text():
             self.status.setText(f"Pad {self.source.pad + 1} is tuned {tuned:+d} st on the "
-                                f"SEQTRAK now. Sample plays means the recording untuned; "
-                                f"loading sets every pad's tuning from there.")
+                                f"SEQTRAK. The app records it untuned: Sample plays is the "
+                                f"untuned note, and loading tunes every pad from there.")
 
     def _play_pad(self, pad: int) -> None:
         shifts = self.shifts()
         if self.source is None or shifts is None:
             return
         a, b = self._region()
-        shift = shifts[pad] - self.source_tuning()     # the capture is already tuned
+        shift = shifts[pad]
         note = keys.note_name(self.notes()[pad])
         self.preview(f"Pad {pad + 1}: {note} ({shifts[pad]:+d} st)",
                      keys.repitch(self.source.left[a:b], shift),

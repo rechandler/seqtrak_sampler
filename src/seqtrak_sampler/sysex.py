@@ -64,6 +64,7 @@ WAVE_NUMBER = 0x03      # 2 bytes: user wave 1-2048, the recording the pad plays
 NOTE_LIMIT_LOW = 0x10
 NOTE_LIMIT_HIGH = 0x11
 COARSE_TUNE = 0x4F      # 40-88 = -24 to +24 semitones; 64 is no change (p. 148)
+FINE_TUNE = 0x50        # 0-127 = -64 to +63; 64 is no change
 COARSE_CENTER = 64
 BASE_NOTE = 60          # pad n plays note 60 + n on a real SEQTRAK
 
@@ -430,6 +431,18 @@ KEY = (0x30, 0x40, 0x7F)                   # 0x40-0x4B: transpose 0 to +11
 def scale_note_address(scale: int, pad: int) -> tuple[int, int, int]:
     """Scale (0-7) note of synth key (pad) 0-6: what that key plays, 36-96."""
     return (0x30, 0x4D, 16 * scale + pad)
+
+
+def tuning(pad: SamplerPad) -> tuple[int, int]:
+    """(Coarse Tune, Fine Tune) of a pad, as stored (64, 64 = as recorded)."""
+    if pad.osc is None or len(pad.osc) <= FINE_TUNE:
+        return COARSE_CENTER, COARSE_CENTER
+    return pad.osc[COARSE_TUNE], pad.osc[FINE_TUNE]
+
+
+def tuning_messages(pad: int, coarse: int, fine: int) -> list[list[int]]:
+    return [parameter_change(oscillator_address(pad, COARSE_TUNE), [coarse]),
+            parameter_change(oscillator_address(pad, FINE_TUNE), [fine])]
 
 
 def coarse_message(pad: int, value: int) -> list[int]:

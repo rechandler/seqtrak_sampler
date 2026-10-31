@@ -120,6 +120,8 @@ class MainWindow(QMainWindow):
         self.device = Device(self)
         self.recorder = Recorder(self)
         self._capture: sysex.SamplerPad | None = None  # pad being opened, if any
+        # Messages that put back the tuning of the pad being opened, if it was tuned.
+        self._capture_restore: list[list[int]] = []
         self._capture_note_frame = 0  # recording frame when the pad's note was sent
         try:
             self._latencies: list[int] = json.loads(self.settings.value("latencies", "[]"))
@@ -950,6 +952,16 @@ class MainWindow(QMainWindow):
             return False
         self.player.stop()
         self._show_toast(f"Opening pad {pad.pad + 1}: playing it once\u2026")
+        # Record it untuned. A tuned pad plays faster or slower than its sample, so the
+        # recording would be cut short (or run long) and its frames wouldn't line up
+        # with the sample's: trims would land in the wrong place. Its tuning goes back
+        # once the recording is in.
+        coarse, fine = sysex.tuning(pad)
+        if (coarse, fine) != (sysex.COARSE_CENTER, sysex.COARSE_CENTER):
+            for msg in sysex.tuning_messages(pad.pad, sysex.COARSE_CENTER,
+                                             sysex.COARSE_CENTER):
+                self.device.send(msg)
+            self._capture_restore = sysex.tuning_messages(pad.pad, coarse, fine)
         hold = pad.seconds + 0.05
 
         def play() -> None:
@@ -1178,9 +1190,15 @@ class MainWindow(QMainWindow):
             self.rec_status.setText("Records the SEQTRAK's USB audio")
             self.rec_status.setStyleSheet("")
 
+    def _restore_capture_tuning(self) -> None:
+        msgs, self._capture_restore = self._capture_restore, []
+        for msg in msgs:
+            self.device.send(msg)
+
     def _recorder_error(self, message: str) -> None:
         self._capture = None
         self._capture_done = None
+        self._restore_capture_tuning()
         self._show_toast(message, error=True)
         if self.follow_box.isChecked():
             self.follow_box.setChecked(False)
@@ -1188,6 +1206,7 @@ class MainWindow(QMainWindow):
     def _recorded(self, left, right, rate: int) -> None:
         if self._capture is not None:
             pad, self._capture = self._capture, None
+            self._restore_capture_tuning()
             self._captured(pad, left, right, rate)
             return
         take = Take(None, time.strftime("Take %H-%M-%S"), left, right, rate, 0, len(left))
