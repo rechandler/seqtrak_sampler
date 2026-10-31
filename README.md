@@ -44,6 +44,25 @@ trimming never writes to other pads by accident.
 their recordings stay on the SEQTRAK, so nothing is lost. The app asks before it uses
 pads that already hold a sample. Each pad can be fine-tuned later in Edit mode.
 
+### Keys mode: one sample, seven notes
+
+Switch the header to **♪ Keys** to turn one pad's sample into something you can play
+melodically: every pad gets the same sample, each tuned to a note of a scale.
+
+1. **Source:** pad 1 opens by default (the SEQTRAK plays it once). Pick another pad
+   from **Source** or click one in the sidebar. The handles set what every pad plays.
+2. **Sample plays:** the note the recording sounds as (C3 by default). Pads are tuned
+   relative to it.
+3. **Notes:** **Project scale** uses the notes the SEQTRAK's own synth keys play in
+   this project (its selected scale and key, read from the SEQTRAK), so the sampler
+   pads line up with them. Or pick Major, minor, a mode, a pentatonic or Chromatic and
+   a **Root**.
+4. **Pad map:** each pad shows its note and how far it's tuned. Click one to hear it.
+   A pad can be tuned at most 24 semitones up or down; past that, loading is off.
+5. **Load to pads 1–7:** each pad gets the source pad's sound settings and trim, and
+   its own tuning (Coarse Tune), named "Source C3", "Source D3", … No audio is copied.
+   **Undo** puts every pad back.
+
 ### Faster round trips
 
 - **Watch folder:** click **Watch folder…** and pick the folder you export `.Y3S` files

@@ -267,3 +267,23 @@ class ParameterRequestTests(unittest.TestCase):
         answer = _hex("F0 43 10 7F 1C 0C 30 40 76 00 77 F7")      # 119 BPM
         self.assertEqual(sysex.parse_parameter_change(answer), ((0x30, 0x40, 0x76), [0, 0x77]))
         self.assertIsNone(sysex.parse_parameter_change(OSC2))
+
+
+class CoarseTuneTests(unittest.TestCase):
+    def test_coarse_message(self):
+        self.assertEqual(sysex.coarse_message(2, 64 + 7),
+                         _hex("F0 43 10 7F 1C 0C 41 2A 4F 47 F7"))
+        with self.assertRaises(ValueError):
+            sysex.coarse_message(2, 64 + 25)
+
+    def test_copy_sets_the_target_tuning(self):
+        osc = [0x40] * sysex.OSCILLATOR_SIZE
+        osc[0:5] = [1, 1, 0, 412 >> 7, 412 & 0x7F]
+        source = sysex.SamplerPad(0, "Pluck", 0, 44111, False, 44111, 60, 60, 412, True,
+                                  osc, [0x22] * sysex.FILTER_SIZE)
+        target = sysex.SamplerPad(3, "", 0, 0, False, 0, 0, 127, 0, False,
+                                  list(osc), [0x22] * sysex.FILTER_SIZE)
+        msgs = sysex.copy_sound_messages(target, source, coarse=64 + 5)
+        self.assertIn(sysex.coarse_message(3, 69), msgs)
+        with self.assertRaises(ValueError):
+            sysex.copy_sound_messages(target, source, coarse=64 - 30)

@@ -52,7 +52,11 @@ class FakeSeqtrak:
         self.stored: dict[tuple[int, int], dict] = {}
         self.silent: set[tuple[int, int]] = set()    # elements that never answer
         # Parameters answered to Parameter Requests.
-        self.params = {sysex.TEMPO: [0x00, 120]}
+        self.params = {sysex.TEMPO: [0x00, 120], sysex.SCALE_SELECT: [0],
+                       sysex.KEY: [0x40]}
+        for scale in range(8):     # the Data List's defaults for Scale 1, on every scale
+            for pad, note in enumerate([60, 62, 63, 65, 67, 68, 70]):
+                self.params[sysex.scale_note_address(scale, pad)] = [note]
         self.drop: dict[tuple, int] = {}             # requests to leave unanswered, n times
 
     def reply(self, msg):
@@ -456,6 +460,80 @@ class DevicePanelTests(unittest.TestCase):
         self.assertIsNone(got[1])
         asks = [m for m in fake.sent if m[:3] == [0xF0, 0x43, 0x30]]
         self.assertEqual(len(asks), 2 + 4)                 # 2 for the first, 4 attempts
+
+    def keys_window(self, fake):
+        from seqtrak_sampler.gui import slice_mode
+        w = self.make_window(fake)
+        w.mode_group.button(2).click()
+        panel = w.keys_panel
+        self.assertEqual(w.stack.currentWidget(), panel)
+        sound = array("h", [3000] * 44100)
+        panel.set_source(slice_mode.Source("Pluck", sound, array("h", sound), 44100,
+                                           pad=0, device_offset=1000))
+        return w, panel
+
+    def test_keys_tunes_pads_to_the_project_scale_and_undoes(self):
+        from PySide6.QtWidgets import QMessageBox
+        fake = FakeSeqtrak()
+        fake.pads = {0: dict(name="Pluck", start=1000, end=45099),
+                     2: dict(name="Vox", start=0, end=88207)}
+        fake.params[sysex.SCALE_SELECT] = [2]                     # scale 3 ...
+        for pad, note in enumerate([60, 63, 65, 67, 70, 72, 75]):
+            fake.params[sysex.scale_note_address(2, pad)] = [note]
+        fake.params[sysex.KEY] = [0x42]                           # ... in key +2
+        w, panel = self.keys_window(fake)
+        self.wait_for(lambda: panel._project_notes is not None)
+        self.assertEqual(panel.notes(), [62, 65, 67, 69, 72, 74, 77])
+        self.assertEqual(panel.scale_info.text(), "scale 3, key +2")
+        self.assertEqual([t[0] for t in panel.pad_map._tiles],
+                         ["D3", "F3", "G3", "A3", "C4", "D4", "F4"])
+        self.assertEqual(panel.pad_map._tiles[2][1:], ("+7 st · was “Vox”", "replace"))
+        self.assertTrue(panel.load_btn.isEnabled())
+
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+        panel._load()
+        w.device.request_pads()
+        for i, shift in enumerate([2, 5, 7, 9, 12, 14, 17]):
+            p = fake.pads[i]
+            self.assertEqual(p["osc"][sysex.COARSE_TUNE], 64 + shift, i)
+            self.assertEqual((p["wave"], p["assigned"]), (400, True), i)
+            self.assertEqual((p["start"], p["end"]),
+                             (1000, sysex.end_point_for(45100, 45099)), i)
+            self.assertEqual(p["name"], f"Pluck {['D3', 'F3', 'G3', 'A3', 'C4', 'D4', 'F4'][i]}")
+        self.assertIn("Pads 1–7 play D3 F3 G3 A3 C4 D4 F4", panel.status.text())
+
+        panel._undo_load()
+        w.device.request_pads()
+        self.assertEqual(fake.pads[0]["osc"][sysex.COARSE_TUNE], 64)
+        self.assertEqual((fake.pads[2]["name"], fake.pads[2]["osc"][sysex.COARSE_TUNE]),
+                         ("Vox", 64))
+        self.assertFalse(fake.pads[5]["assigned"])
+
+    def test_keys_with_a_chosen_scale_and_range_check(self):
+        fake = FakeSeqtrak()
+        fake.pads = {0: dict(name="Pluck", start=0, end=44111)}
+        w, panel = self.keys_window(fake)
+        panel.scale_box.setCurrentText("Minor pentatonic")
+        panel.root_box.setCurrentIndex(panel.root_box.findData(57))          # A2
+        panel._scale_chosen()
+        self.assertTrue(panel.root_box.isVisibleTo(panel))
+        self.assertEqual(panel.shifts(), [-3, 0, 2, 4, 7, 9, 12])
+        self.assertTrue(panel.load_btn.isEnabled())
+        panel.sample_box.setCurrentIndex(panel.sample_box.findData(36))      # C1
+        panel._refresh()
+        self.assertFalse(panel.load_btn.isEnabled())                         # +36 > 24
+        self.assertIn("more than 24", panel.pad_map._tiles[6][1])
+
+    def test_sidebar_pad_click_picks_the_keys_source(self):
+        fake = FakeSeqtrak()
+        fake.pads = {0: dict(name="Pluck", start=0, end=44111),
+                     1: dict(name="Vox", start=0, end=88207)}
+        w, panel = self.keys_window(fake)
+        chosen = []
+        panel._source_chosen = chosen.append
+        w._pad_clicked(w.pads_list.item(1))
+        self.assertEqual(panel.source_box.currentData(), ("pad", 1))
+        self.assertEqual(chosen, [panel.source_box.currentIndex()])
 
     def test_read_stored_samples_without_touching_the_pads(self):
         fake = FakeSeqtrak()

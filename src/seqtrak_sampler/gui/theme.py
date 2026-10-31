@@ -126,7 +126,7 @@ QComboBox QAbstractItemView {{
     border: 1px solid {BORDER};
     selection-background-color: {SURFACE_3};
 }}
-QPushButton#segLeft, QPushButton#segRight {{
+QPushButton#segLeft, QPushButton#segMid, QPushButton#segRight {{
     background: {SURFACE_2};
     color: {MUTED};
     padding: 6px 16px;
@@ -140,7 +140,11 @@ QPushButton#segRight {{
     border-bottom-left-radius: 0;
     border-left: none;
 }}
-QPushButton#segLeft:checked, QPushButton#segRight:checked {{
+QPushButton#segMid {{
+    border-radius: 0;
+    border-left: none;
+}}
+QPushButton#segLeft:checked, QPushButton#segMid:checked, QPushButton#segRight:checked {{
     background: {SURFACE_3};
     color: {TEXT};
     border-color: {ACCENT};

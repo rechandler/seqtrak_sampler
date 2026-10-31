@@ -63,6 +63,8 @@ WAVE_SELECT = 0x01      # 1 = user wave (fixed on the sampler)
 WAVE_NUMBER = 0x03      # 2 bytes: user wave 1-2048, the recording the pad plays
 NOTE_LIMIT_LOW = 0x10
 NOTE_LIMIT_HIGH = 0x11
+COARSE_TUNE = 0x4F      # 40-88 = -24 to +24 semitones; 64 is no change (p. 148)
+COARSE_CENTER = 64
 BASE_NOTE = 60          # pad n plays note 60 + n on a real SEQTRAK
 
 # Every parameter of the Oscillator/Amplitude/Pitch block (p. 147-148) and of the
@@ -363,13 +365,18 @@ def block_messages(hi: int, pad: int, params: list[tuple[int, int]], new: list[i
     return msgs
 
 
-def copy_sound_messages(target: SamplerPad, source: SamplerPad) -> list[list[int]]:
+def copy_sound_messages(target: SamplerPad, source: SamplerPad,
+                        coarse: int | None = None) -> list[list[int]]:
     """Give pad `target` all of source's sound settings (recording, level, envelope,
-    filter, EQ, LFO), keeping its own note. Switches the pad on last."""
+    filter, EQ, LFO), keeping its own note, and Coarse Tune `coarse` if given.
+    Switches the pad on last."""
     if source.osc is None:
         raise ValueError("the source pad's settings haven't been read yet")
     osc = list(source.osc)
     osc[NOTE_LIMIT_LOW] = osc[NOTE_LIMIT_HIGH] = BASE_NOTE + target.pad
+    if coarse is not None:
+        coarse_message(target.pad, coarse)          # range check
+        osc[COARSE_TUNE] = coarse
     msgs = block_messages(OSCILLATOR_HI, target.pad, OSCILLATOR_PARAMS, osc, target.osc,
                           skip=(ELEMENT_ASSIGN,))
     if source.filt is not None:
@@ -396,7 +403,7 @@ def wave_messages(pad: int, wave: int, note_low: int | None = None,
 
 
 def slice_messages(target: SamplerPad, source: SamplerPad, start: int, end_exclusive: int,
-                   name: str) -> list[list[int]]:
+                   name: str, coarse: int | None = None) -> list[list[int]]:
     """Make pad `target` sound like the source pad, playing source's recording from
     start to end (frames of that recording), named `name`."""
     if source.wave is None or source.osc is None:
@@ -405,7 +412,7 @@ def slice_messages(target: SamplerPad, source: SamplerPad, start: int, end_exclu
     end = end_point_for(end_exclusive, last)
     if not 0 <= start < end:
         raise ValueError("segment is too short for the SEQTRAK")
-    msgs = copy_sound_messages(target, source)
+    msgs = copy_sound_messages(target, source, coarse)
     msgs.append(parameter_change(sample_general_address(target.pad, LOOP_ON), [0x00]))
     msgs.append(parameter_change(sample_general_address(target.pad, LOOP_LENGTH),
                                  encode_point(last)))
@@ -414,8 +421,22 @@ def slice_messages(target: SamplerPad, source: SamplerPad, start: int, end_exclu
     return msgs
 
 
-# Tempo is in the Data List (Project Common / General, p. 124).
+# Project Common / General (p. 124) and Scale (p. 125).
 TEMPO = (0x30, 0x40, 0x76)                 # 2 bytes, 5-300 BPM
+SCALE_SELECT = (0x30, 0x40, 0x7E)          # 0-7: Scale 1-8
+KEY = (0x30, 0x40, 0x7F)                   # 0x40-0x4B: transpose 0 to +11
+
+
+def scale_note_address(scale: int, pad: int) -> tuple[int, int, int]:
+    """Scale (0-7) note of synth key (pad) 0-6: what that key plays, 36-96."""
+    return (0x30, 0x4D, 16 * scale + pad)
+
+
+def coarse_message(pad: int, value: int) -> list[int]:
+    """Set a pad's Coarse Tune (40-88; 64 = as recorded)."""
+    if not COARSE_CENTER - 24 <= value <= COARSE_CENTER + 24:
+        raise ValueError("a pad can be tuned at most 24 semitones up or down")
+    return parameter_change(oscillator_address(pad, COARSE_TUNE), [value])
 
 
 def note_on(note: int, velocity: int = 100) -> list[int]:

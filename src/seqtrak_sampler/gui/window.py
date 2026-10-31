@@ -23,6 +23,7 @@ from . import device as dev
 from . import theme
 from .device import Device
 from .player import Player
+from .keys_mode import KeysPanel
 from .slice_mode import SlicePanel
 from .recorder import Recorder
 from .waveform import WaveformView
@@ -157,20 +158,26 @@ class MainWindow(QMainWindow):
         header.addStretch()
         self.edit_mode_btn = QPushButton("Edit")
         self.slice_mode_btn = QPushButton("\u2702  Slice")
+        self.keys_mode_btn = QPushButton("\u266A  Keys")
         self.mode_group = QButtonGroup(self)
-        for i, b in enumerate((self.edit_mode_btn, self.slice_mode_btn)):
+        mode_buttons = (self.edit_mode_btn, self.slice_mode_btn, self.keys_mode_btn)
+        for i, b in enumerate(mode_buttons):
             b.setCheckable(True)
-            b.setObjectName("segLeft" if i == 0 else "segRight")
+            b.setObjectName("segLeft" if i == 0 else
+                            "segRight" if i == len(mode_buttons) - 1 else "segMid")
             self.mode_group.addButton(b, i)
         self.edit_mode_btn.setChecked(True)
         self.edit_mode_btn.setToolTip("Trim, record and export samples; fine-tune a pad")
         self.slice_mode_btn.setToolTip("Cut one sample into segments and load segment N "
                                        "onto pad N")
+        self.keys_mode_btn.setToolTip("Put one sample on all 7 pads, each tuned to a note "
+                                      "of a scale")
         self.mode_group.idClicked.connect(self._set_mode)
         modes = QHBoxLayout()
         modes.setSpacing(0)
         modes.addWidget(self.edit_mode_btn)
         modes.addWidget(self.slice_mode_btn)
+        modes.addWidget(self.keys_mode_btn)
         header.addLayout(modes)
         header.addSpacing(16)
         header.addWidget(self.watch_btn)
@@ -331,9 +338,11 @@ class MainWindow(QMainWindow):
         body.setSpacing(16)
         body.addWidget(sidebar)
         self.slice_panel = SlicePanel(self)
+        self.keys_panel = KeysPanel(self)
         self.stack = QStackedWidget()
         self.stack.addWidget(card)
         self.stack.addWidget(self.slice_panel)
+        self.stack.addWidget(self.keys_panel)
         body.addWidget(self.stack, 1)
 
         # Footer: output folder and export
@@ -421,8 +430,19 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(mode)
         for w in (self.auto_save_box, self.export_all_btn, self.export_btn):
             w.setVisible(mode == 0)
-        if mode == 1:
-            self.slice_panel.activate()
+        panel = self._pad_panel()
+        if panel is not None:
+            panel.activate()
+
+    def _pad_panels(self) -> list:
+        """The modes that load onto pads (Slice, Keys), once they exist."""
+        return [p for p in (getattr(self, "slice_panel", None),
+                            getattr(self, "keys_panel", None)) if p is not None]
+
+    def _pad_panel(self):
+        """The pad-loading mode on screen, if one is."""
+        current = self.stack.currentWidget() if hasattr(self, "stack") else None
+        return current if current in self._pad_panels() else None
 
     # Loading
 
@@ -786,8 +806,7 @@ class MainWindow(QMainWindow):
         self.device_label.setText(text)
         self.device_dot.setStyleSheet(f"background: {color}; border-radius: 4px;")
         self.enable_btn.setVisible(state == dev.SILENT)
-        panel = getattr(self, "slice_panel", None)
-        if panel is not None:
+        for panel in self._pad_panels():
             panel._refresh()
         self.log_btn.setVisible(state not in (dev.UNAVAILABLE, dev.DISCONNECTED))
         self.stored_btn.setVisible(state == dev.CONNECTED)
@@ -877,8 +896,7 @@ class MainWindow(QMainWindow):
                 "in_app": f"Pad {i + 1}: open. Click to edit it.",
             }[state])
         self._update_send_button()
-        panel = getattr(self, "slice_panel", None)
-        if panel is not None:
+        for panel in self._pad_panels():
             panel.refresh_sources()
             panel._refresh()
 
@@ -892,13 +910,9 @@ class MainWindow(QMainWindow):
         if pad.empty:
             self._show_toast(f"The SEQTRAK reports pad {row + 1} as empty.", error=True)
             return
-        if self.stack.currentIndex() == 1:
-            # In Slice mode a pad click picks the source.
-            self.slice_panel.refresh_sources()
-            index = self.slice_panel.source_box.findData(("pad", row))
-            if index >= 0:
-                self.slice_panel.source_box.setCurrentIndex(index)
-                self.slice_panel._source_chosen(index)
+        panel = self._pad_panel()
+        if panel is not None:
+            panel.choose_pad(row)            # in Slice and Keys mode it picks the source
             return
         take = self._take_for_pad(pad)
         if take is not None:
