@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SEQTRAK Sampler</title>
-<meta name="description" content="A free companion app for the Yamaha SEQTRAK: record it over USB, trim sampler pads right on the device, slice one sample across pads, and export synth-ready stereo WAVs.">
+<meta name="description" content="A free companion app for the Yamaha SEQTRAK: record it over USB, trim sampler pads right on the device, slice one sample across pads or tune it across them as keys, and export synth-ready stereo WAVs.">
 <meta property="og:title" content="SEQTRAK Sampler">
 <meta property="og:description" content="Record, trim and slice SEQTRAK samples without a DAW round trip.">
 <meta property="og:image" content="screenshot.png">
@@ -116,6 +116,8 @@
 
   .showcase { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 48px; align-items: center; }
   .showcase .shot { margin: 0; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); }
+  .showcase.flip { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
+  .showcase.flip > .shot { order: -1; }
   .steps { list-style: none; margin: 0 0 20px; padding: 0; counter-reset: s; }
   .steps li { position: relative; padding: 6px 0 6px 36px; counter-increment: s; }
   .steps li::before { content: counter(s); position: absolute; left: 0; top: 8px; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 650; background: var(--accent); color: #1a0d03; }
@@ -127,7 +129,8 @@
   footer .wrap { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
 
   @media (max-width: 860px) {
-    .showcase { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+    .showcase, .showcase.flip { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+    .showcase.flip > .shot { order: 0; }
     .features { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .downloads { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .dl.source { grid-column: 1 / -1; }
@@ -136,7 +139,7 @@
     .wrap { padding: 0 16px; }
     nav .links a:not(.gh) { display: none; }
     .hero { padding-top: 56px; }
-    .compare, .features, .downloads, .showcase { grid-template-columns: minmax(0, 1fr); }
+    .compare, .features, .downloads, .showcase, .showcase.flip { grid-template-columns: minmax(0, 1fr); }
     section { padding: 64px 0; }
     .btn { width: 100%; justify-content: center; }
     .dl .btn { align-self: stretch; }
@@ -151,6 +154,7 @@
     <div class="links">
       <a href="#how">How it works</a>
       <a href="#slice">Slice mode</a>
+      <a href="#keys">Keys mode</a>
       <a href="#features">Features</a>
       <a href="#download">Download</a>
       <a href="#faq">FAQ</a>
@@ -161,9 +165,9 @@
 
 <header class="hero">
   <div class="wrap">
-    <span class="eyebrow">Free &amp; open source · macOS &amp; Windows · v0.6</span>
+    <span class="eyebrow">Free &amp; open source · macOS &amp; Windows · v0.8</span>
     <h1>Sampling on the SEQTRAK, <em>without the DAW</em></h1>
-    <p class="lede">Record the SEQTRAK over USB, trim its sampler pads right on the device, slice one sample across several pads in a click, and export clean stereo WAVs for its synth tracks.</p>
+    <p class="lede">Record the SEQTRAK over USB, trim its sampler pads right on the device, slice one sample across several pads or play it in a scale across all seven, and export clean stereo WAVs for its synth tracks.</p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/rechandler/seqtrak_sampler/releases/latest/download/SEQTRAK-Sampler-macOS.zip">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.37 12.6c-.02-2.3 1.88-3.4 1.96-3.46-1.07-1.56-2.73-1.78-3.32-1.8-1.41-.14-2.76.83-3.47.83-.72 0-1.82-.81-2.99-.79-1.54.02-2.96.9-3.75 2.27-1.6 2.78-.41 6.89 1.15 9.14.76 1.1 1.67 2.34 2.86 2.3 1.15-.05 1.58-.74 2.97-.74 1.38 0 1.77.74 2.98.72 1.23-.02 2.01-1.12 2.76-2.23.87-1.28 1.23-2.52 1.25-2.58-.03-.01-2.38-.92-2.4-3.66zM14.1 5.86c.63-.77 1.06-1.83.94-2.89-.91.04-2.02.61-2.67 1.37-.58.67-1.1 1.76-.96 2.8 1.02.08 2.06-.52 2.69-1.28z"/></svg>
@@ -176,7 +180,7 @@
     </div>
     <p class="fineprint">Not affiliated with or endorsed by Yamaha Corporation.</p>
     <div class="shot">
-      <img src="screenshot.png" width="1180" height="680" alt="SEQTRAK Sampler connected to a SEQTRAK: the sampler pads in the sidebar, pad 2 open with trim handles, and Reload, Undo and Apply to pad 2 buttons">
+      <img src="screenshot.png" width="1180" height="680" alt="SEQTRAK Sampler connected to a SEQTRAK: the Edit, Slice and Keys switch, the sampler pads in the sidebar, pad 2 open with trim handles and Reload, Undo and Apply to pad 2 buttons, and a Listen on output picker in the footer">
     </div>
   </div>
 </header>
@@ -202,7 +206,7 @@
         <ol class="flow">
           <li>Resample on the SEQTRAK. Its pad shows up in the app on its own.</li>
           <li>Click the pad. The SEQTRAK plays it and it opens in the editor.</li>
-          <li>Drag the handles and click <strong>Apply to pad</strong>, or switch to <strong>Slice</strong> to spread it across pads</li>
+          <li>Drag the handles and click <strong>Apply to pad</strong>, or switch to <strong>Slice</strong> or <strong>Keys</strong> to spread it across pads</li>
           <li>Need it on a synth track? <strong>Export WAV</strong> or drag it into the SEQTRAK app</li>
         </ol>
       </div>
@@ -214,7 +218,7 @@
   <div class="wrap">
     <div class="showcase">
       <div>
-        <div class="kicker">Slice mode <span class="tag">New</span></div>
+        <div class="kicker">Slice mode</div>
         <h2>One sample, up to seven pads</h2>
         <p class="section-lede" style="margin-bottom: 24px">Cut a break into hits or a phrase into chops, and every piece lands on its own pad, trimmed and ready to play.</p>
         <ol class="steps">
@@ -226,6 +230,27 @@
       </div>
       <div class="shot">
         <img src="slice.png" width="1180" height="680" loading="lazy" alt="Slice mode: a drum break split into four colored segments, with a pad map showing pad 1 trimmed, pads 2 and 3 replacing Vox chop and Bass stab, and pad 4 empty">
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="keys">
+  <div class="wrap">
+    <div class="showcase flip">
+      <div>
+        <div class="kicker">Keys mode <span class="tag">New</span></div>
+        <h2>One sample, seven notes</h2>
+        <p class="section-lede" style="margin-bottom: 24px">Turn a pluck, a stab or a sung note into something you can play: every pad gets the same sample, each tuned to a note of a scale.</p>
+        <ol class="steps">
+          <li>Pick a source pad<span>The handles set the part of the sample every pad plays.</span></li>
+          <li>Choose the notes<span><strong>Project scale</strong> reads the scale and key the SEQTRAK's own synth keys use, so the pads match them. Or pick Major, minor, a mode or a pentatonic and a root.</span></li>
+          <li>Click Load to pads 1–7<span>Each pad gets the source's sound settings and its own tuning. Click a pad on screen first to hear it.</span></li>
+        </ol>
+        <p class="note">No audio is copied, so it uses no sample memory, and <strong>Undo</strong> puts all seven pads back, tuning included.</p>
+      </div>
+      <div class="shot">
+        <img src="keys.png" width="1180" height="680" loading="lazy" alt="Keys mode: a pluck on pad 3 as the source, Sample plays C3, Notes set to Project scale, and seven pad tiles showing C3, D3, D#3, F3, G3, G#3 and A#3 with how far each is tuned">
       </div>
     </div>
   </div>
@@ -278,9 +303,9 @@
         <p>44.1 kHz, 16-bit stereo, read losslessly from .Y3S files. Optional normalize to -1 dB and short fades so edges don't click.</p>
       </div>
       <div class="feature">
-        <div class="icon"><svg viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><path d="M12 19h8"/></svg></div>
-        <h3>Command line too</h3>
-        <p>Batch-convert .Y3S files with the bundled <code>y3s2wav</code> tool. No dependencies beyond Python.</p>
+        <div class="icon"><svg viewBox="0 0 24 24"><path d="M3 14v-2a9 9 0 0 1 18 0v2"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/></svg></div>
+        <h3>Listen where you want</h3>
+        <p>Pick where Play and pad previews sound, like headphones plugged into the SEQTRAK, without touching your computer's sound settings.</p>
       </div>
     </div>
   </div>
@@ -290,7 +315,7 @@
   <div class="wrap">
     <div class="kicker">Download</div>
     <h2>Get SEQTRAK Sampler</h2>
-    <p class="section-lede">Free and open source, currently v0.6. The builds aren't code-signed yet, so your OS will ask once before opening them (see the FAQ).</p>
+    <p class="section-lede">Free and open source, currently v0.8. The builds aren't code-signed yet, so your OS will ask once before opening them (see the FAQ).</p>
     <div class="downloads">
       <div class="dl">
         <h3>macOS</h3>
@@ -330,11 +355,19 @@ y3s2wav *.Y3S -o wavs/ --normalize</pre>
     </details>
     <details>
       <summary>Does it change my SEQTRAK?</summary>
-      <p>Only when you ask it to. Apply to pad and Load to pads change pad start and end points, names, and which recording a pad plays. They never delete audio, and Undo puts pads back. Reading .Y3S files and exporting WAVs never touches the device or the SEQTRAK app's data.</p>
+      <p>Only when you ask it to. Apply to pad and Load to pads change pads' start and end points, names, sound settings and tuning, and which recording a pad plays. They never delete audio, and Undo puts pads back. Reading .Y3S files and exporting WAVs never touches the device or the SEQTRAK app's data.</p>
     </details>
     <details>
-      <summary>Does Slice mode use up sample memory?</summary>
-      <p>No. Every sliced pad plays the source pad's recording, trimmed to its own segment, so no new audio is recorded. Pads that held other samples keep those recordings on the SEQTRAK, which is how Undo brings them back.</p>
+      <summary>Do Slice and Keys modes use up sample memory?</summary>
+      <p>No. Every pad they load plays the source pad's recording, trimmed (Slice) or tuned (Keys), so no new audio is recorded. Pads that held other samples keep those recordings on the SEQTRAK, which is how Undo brings them back.</p>
+    </details>
+    <details>
+      <summary>Why can't I hear Play or the pad previews?</summary>
+      <p>The sound is going to a different output from the one you're listening on. On Windows, plugging in the SEQTRAK often changes the computer's default output. Use <strong>Listen on</strong>, at the bottom of the window, to pick your speakers, your headphones, or the SEQTRAK itself if your headphones are plugged into it. Each preview says where it played.</p>
+    </details>
+    <details>
+      <summary>My pad is tuned on the SEQTRAK. Does that matter?</summary>
+      <p>No. When the app opens a pad it records it untuned, so the whole sample comes in and trims line up exactly, then it puts your tuning straight back. In the app you hear the sample at its original pitch.</p>
     </details>
     <details>
       <summary>Can it put a sample on a synth track?</summary>
