@@ -26,6 +26,7 @@ DEFAULT_NOTE = 60                   # C3
 
 def _note_box(default: int) -> QComboBox:
     box = QComboBox()
+    box.setMaxVisibleItems(12)          # an octave at a time; the list scrolls
     for note in NOTE_RANGE:
         box.addItem(keys.note_name(note), note)
     box.setCurrentIndex(box.findData(default))

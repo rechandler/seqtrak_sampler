@@ -124,6 +124,7 @@ QComboBox {{
     border: 1px solid {BORDER};
     border-radius: 8px;
     padding: 6px 30px 6px 10px;
+    combobox-popup: 0;  /* a scrolling list capped at maxVisibleItems, not full height */
 }}
 QComboBox:hover {{
     background: {SURFACE_3};
@@ -142,6 +143,28 @@ QComboBox::down-arrow {{
     image: url("{{chevron}}");
     width: 10px;
     height: 10px;
+}}
+QComboBox QAbstractItemView QScrollBar:vertical {{
+    background: transparent;
+    width: 8px;
+    margin: 2px;
+}}
+QComboBox QAbstractItemView QScrollBar::handle:vertical {{
+    background: {BORDER};
+    border-radius: 2px;
+    min-height: 24px;
+}}
+QComboBox QAbstractItemView QScrollBar::handle:vertical:hover {{
+    background: {FAINT};
+}}
+QComboBox QAbstractItemView QScrollBar::add-line, QComboBox QAbstractItemView QScrollBar::sub-line,
+QComboBox QAbstractItemView QScrollBar::add-page, QComboBox QAbstractItemView QScrollBar::sub-page {{
+    height: 0;
+    background: none;
+}}
+QComboBox QAbstractItemView::item {{
+    min-height: 24px;
+    padding: 0 6px;
 }}
 QComboBox QAbstractItemView {{
     background: {SURFACE_2};
