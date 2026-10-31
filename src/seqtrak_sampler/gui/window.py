@@ -12,7 +12,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QButtonGroup, QFileDialog, QHBoxLayout, QStackedWidget, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+    QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QStackedWidget, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -163,8 +163,7 @@ class MainWindow(QMainWindow):
         mode_buttons = (self.edit_mode_btn, self.slice_mode_btn, self.keys_mode_btn)
         for i, b in enumerate(mode_buttons):
             b.setCheckable(True)
-            b.setObjectName("segLeft" if i == 0 else
-                            "segRight" if i == len(mode_buttons) - 1 else "segMid")
+            b.setObjectName("segment")
             self.mode_group.addButton(b, i)
         self.edit_mode_btn.setChecked(True)
         self.edit_mode_btn.setToolTip("Trim, record and export samples; fine-tune a pad")
@@ -173,12 +172,16 @@ class MainWindow(QMainWindow):
         self.keys_mode_btn.setToolTip("Put one sample on all 7 pads, each tuned to a note "
                                       "of a scale")
         self.mode_group.idClicked.connect(self._set_mode)
-        modes = QHBoxLayout()
-        modes.setSpacing(0)
+        # One rounded track with the chosen mode as a pill inside it.
+        modes_frame = QFrame()
+        modes_frame.setObjectName("segmented")
+        modes = QHBoxLayout(modes_frame)
+        modes.setContentsMargins(3, 3, 3, 3)
+        modes.setSpacing(2)
         modes.addWidget(self.edit_mode_btn)
         modes.addWidget(self.slice_mode_btn)
         modes.addWidget(self.keys_mode_btn)
-        header.addLayout(modes)
+        header.addWidget(modes_frame)
         header.addSpacing(16)
         header.addWidget(self.watch_btn)
         header.addWidget(add_btn)

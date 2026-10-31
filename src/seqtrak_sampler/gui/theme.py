@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtGui import QColor, QPalette
+import tempfile
+from pathlib import Path
+
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor, QImage, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QApplication
 
 BG = "#111215"
@@ -119,35 +123,54 @@ QComboBox {{
     background: {SURFACE_2};
     border: 1px solid {BORDER};
     border-radius: 8px;
-    padding: 6px 10px;
+    padding: 6px 30px 6px 10px;
+}}
+QComboBox:hover {{
+    background: {SURFACE_3};
+}}
+QComboBox:on, QComboBox:focus {{
+    border-color: {ACCENT};
+}}
+QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 26px;
+    border: none;
+    background: transparent;
+}}
+QComboBox::down-arrow {{
+    image: url("{{chevron}}");
+    width: 10px;
+    height: 10px;
 }}
 QComboBox QAbstractItemView {{
     background: {SURFACE_2};
     border: 1px solid {BORDER};
+    border-radius: 8px;
+    padding: 4px;
+    outline: 0;
     selection-background-color: {SURFACE_3};
+    selection-color: {TEXT};
 }}
-QPushButton#segLeft, QPushButton#segMid, QPushButton#segRight {{
+QFrame#segmented {{
     background: {SURFACE_2};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+}}
+QPushButton#segment {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 7px;
     color: {MUTED};
-    padding: 6px 16px;
+    padding: 5px 14px;
 }}
-QPushButton#segLeft {{
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
-}}
-QPushButton#segRight {{
-    border-top-left-radius: 0;
-    border-bottom-left-radius: 0;
-    border-left: none;
-}}
-QPushButton#segMid {{
-    border-radius: 0;
-    border-left: none;
-}}
-QPushButton#segLeft:checked, QPushButton#segMid:checked, QPushButton#segRight:checked {{
-    background: {SURFACE_3};
+QPushButton#segment:hover {{
     color: {TEXT};
-    border-color: {ACCENT};
+}}
+QPushButton#segment:checked {{
+    background: rgba(255, 122, 26, 0.14);
+    border-color: rgba(255, 122, 26, 0.6);
+    color: {TEXT};
 }}
 QLabel#panelTitle {{
     font-size: 20px;
@@ -263,4 +286,24 @@ def apply(app: QApplication) -> None:
     pal.setColor(QPalette.Disabled, QPalette.Text, QColor(FAINT))
     pal.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(FAINT))
     app.setPalette(pal)
-    app.setStyleSheet(STYLESHEET)
+    app.setStyleSheet(STYLESHEET.replace("{chevron}", _chevron()))
+
+
+def _chevron() -> str:
+    """Draw the combo boxes' down chevron to a PNG (and an @2x one for sharp
+    screens) and return its path for the stylesheet. Drawn rather than shipped, so
+    it needs no image plugin and no data file in the packaged app."""
+    folder = Path(tempfile.gettempdir()) / "seqtrak-sampler"
+    folder.mkdir(exist_ok=True)
+    for scale, name in ((1, "chevron.png"), (2, "chevron@2x.png")):
+        size = 10 * scale
+        image = QImage(size, size, QImage.Format_ARGB32_Premultiplied)
+        image.fill(Qt.transparent)
+        p = QPainter(image)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(MUTED), 1.6 * scale, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.drawPolyline([QPointF(1.5 * scale, 3.5 * scale), QPointF(5 * scale, 7 * scale),
+                        QPointF(8.5 * scale, 3.5 * scale)])
+        p.end()
+        image.save(str(folder / name))
+    return (folder / "chevron.png").as_posix()

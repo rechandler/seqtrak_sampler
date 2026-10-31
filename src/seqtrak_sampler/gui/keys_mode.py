@@ -10,7 +10,10 @@ selected scale and key, read from the device (Data List pp. 124-125).
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QMessageBox, QVBoxLayout
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QComboBox, QHBoxLayout, QLabel, QMessageBox, QSizePolicy, QVBoxLayout,
+)
 
 from .. import keys, sysex
 from . import device as dev
@@ -79,10 +82,14 @@ class KeysPanel(PadPanel):
         row.addWidget(self.root_label)
         row.addWidget(self.root_box)
         row.addWidget(self.scale_info)
-        row.addStretch(1)
-        hint = QLabel("Handles set what every pad plays · click a pad to hear it")
+        row.addSpacing(12)
+        hint = QLabel("Click a pad to hear it")
+        hint.setToolTip("The handles on the waveform set the part every pad plays")
         hint.setObjectName("muted")
-        row.addWidget(hint)
+        hint.setMinimumWidth(0)
+        hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        hint.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row.addWidget(hint, 1)
 
         self.pad_map.clicked.connect(self._play_pad)
 
