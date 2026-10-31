@@ -13,6 +13,7 @@ from .. import audio
 class Player(QObject):
     position = Signal(object)  # current frame, or None when stopped
     stopped = Signal()
+    failed = Signal(str)       # the output device reported an error
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -20,6 +21,7 @@ class Player(QObject):
         self._buffer: QBuffer | None = None
         self._offset = 0
         self._rate = 44100
+        self.device_name = ""      # the output the last sound went to
         self._timer = QTimer(self)
         self._timer.setInterval(30)
         self._timer.timeout.connect(self._tick)
@@ -34,6 +36,7 @@ class Player(QObject):
         device = QMediaDevices.defaultAudioOutput()
         if device.isNull():
             raise RuntimeError("no audio output device found")
+        self.device_name = device.description()
         fmt = QAudioFormat()
         fmt.setSampleRate(rate)
         fmt.setChannelCount(2)
@@ -69,3 +72,16 @@ class Player(QObject):
     def _on_state(self, state) -> None:
         if state == QAudio.IdleState:
             self.stop()
+        elif state == QAudio.StoppedState and self._sink is not None:
+            error = self._sink.error()
+            if error not in (QAudio.NoError, QAudio.UnderrunError):
+                name = getattr(error, "name", str(error))
+                self.stop()
+                self.failed.emit(f"Couldn't play through {self.device_name or 'the output'} "
+                                 f"({name}).")
+
+
+def through_seqtrak(device_name: str) -> bool:
+    """Is this output the SEQTRAK itself? (Windows often makes it the default when it's
+    plugged in, so previews come out of the SEQTRAK rather than the computer.)"""
+    return "SEQTRAK" in device_name.upper()

@@ -532,6 +532,31 @@ class DevicePanelTests(unittest.TestCase):
             self.assertEqual([fake.pads[i]["osc"][sysex.COARSE_TUNE] for i in range(7)],
                              [64, 66, 68, 69, 71, 73, 75])
 
+    def test_previews_say_where_the_sound_goes(self):
+        fake = FakeSeqtrak()
+        fake.pads = {0: dict(name="Pluck", start=0, end=44111)}
+        w, panel = self.keys_window(fake)
+        panel.scale_box.setCurrentText("Major")
+        panel._scale_chosen()
+        player = w.player
+
+        def play(left, right, rate, offset, name="Speakers (Realtek)"):
+            player.device_name = name
+        player.play = play
+        panel._play_pad(2)
+        self.assertEqual(panel.status.text(),
+                         "▶  Pad 3: E3 (+4 st) through Speakers (Realtek)")
+        player.play = lambda *a: play(*a, name="SEQTRAK")
+        panel._play_pad(0)
+        self.assertIn("through SEQTRAK. That's the SEQTRAK, so it plays there",
+                      panel.status.text())
+
+        def broken(*a):
+            raise RuntimeError("no audio output device found")
+        player.play = broken
+        panel._play_pad(0)
+        self.assertEqual(panel.status.text(), "Can't play: no audio output device found.")
+
     def test_keys_with_a_chosen_scale_and_range_check(self):
         fake = FakeSeqtrak()
         fake.pads = {0: dict(name="Pluck", start=0, end=44111)}

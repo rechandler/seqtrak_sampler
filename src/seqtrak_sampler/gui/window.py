@@ -22,7 +22,7 @@ from ..y3s import read_y3s
 from . import device as dev
 from . import theme
 from .device import Device
-from .player import Player
+from .player import Player, through_seqtrak
 from .keys_mode import KeysPanel
 from .slice_mode import SlicePanel
 from .recorder import Recorder
@@ -280,6 +280,7 @@ class MainWindow(QMainWindow):
         self.wave.regionChanged.connect(self._region_changed)
         self.player.position.connect(self.wave.set_playhead)
         self.player.stopped.connect(lambda: self.play_btn.setIcon(play_icon()))
+        self.player.failed.connect(lambda text: self._show_toast(text, error=True))
         self.play_btn = QPushButton()
         self.play_btn.setObjectName("play")
         self.play_btn.setFixedSize(40, 40)
@@ -646,6 +647,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Can't play", str(e))
             return
         self.play_btn.setIcon(stop_icon())
+        if through_seqtrak(self.player.device_name):
+            self._show_toast("Playing through the SEQTRAK (it's the computer's sound "
+                             "output). Pick your speakers to hear it on the computer.")
 
     # Export
 

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QComboBox, QLabel, QMessageBox, QPushButton, QWidg
 from .. import sysex
 from . import device as dev
 from . import theme
+from .player import through_seqtrak
 from .waveform import WaveformView
 
 
@@ -246,6 +247,21 @@ class PadPanel(QWidget):
         if pad is None or pad.empty:
             return "empty", "empty"
         return f"was “{pad.name}”", "replace"
+
+    def preview(self, what: str, left, right, offset: int) -> None:
+        """Play a preview and say where it went: on Windows the default output is
+        often the SEQTRAK itself once it's plugged in."""
+        player = self.window.player
+        try:
+            player.play(left, right, self.source.rate, offset)
+        except RuntimeError as e:
+            self.status.setText(f"Can't play: {e}.")
+            return
+        text = f"▶  {what} through {player.device_name or 'the default output'}"
+        if through_seqtrak(player.device_name):
+            text += (". That's the SEQTRAK, so it plays there. To hear it on the "
+                     "computer, pick your speakers or headphones as the sound output.")
+        self.status.setText(text)
 
     def current_pad(self, i: int) -> sysex.SamplerPad:
         return self.window._pads.get(i) or sysex.SamplerPad(i, "", 0, 0, False, 0)

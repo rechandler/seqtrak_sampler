@@ -137,11 +137,7 @@ class SlicePanel(PadPanel):
         if self.source is None or pad >= len(segs):
             return
         a, b = segs[pad]
-        try:
-            self.window.player.play(self.source.left[a:b], self.source.right[a:b],
-                                    self.source.rate, a)
-        except RuntimeError as e:
-            self.status.setText(str(e))
+        self.preview(f"Segment {pad + 1}", self.source.left[a:b], self.source.right[a:b], a)
 
     # Pad map and loading
 

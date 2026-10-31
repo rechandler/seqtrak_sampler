@@ -229,12 +229,10 @@ class KeysPanel(PadPanel):
             return
         a, b = self._region()
         shift = shifts[pad] - self.source_tuning()     # the capture is already tuned
-        try:
-            self.window.player.play(keys.repitch(self.source.left[a:b], shift),
-                                    keys.repitch(self.source.right[a:b], shift),
-                                    self.source.rate, a)
-        except RuntimeError as e:
-            self.status.setText(str(e))
+        note = keys.note_name(self.notes()[pad])
+        self.preview(f"Pad {pad + 1}: {note} ({shifts[pad]:+d} st)",
+                     keys.repitch(self.source.left[a:b], shift),
+                     keys.repitch(self.source.right[a:b], shift), a)
 
     def _load(self) -> None:
         source_pad = self.source_pad()
