@@ -435,7 +435,7 @@ def scale_note_address(scale: int, pad: int) -> tuple[int, int, int]:
 def coarse_message(pad: int, value: int) -> list[int]:
     """Set a pad's Coarse Tune (40-88; 64 = as recorded)."""
     if not COARSE_CENTER - 24 <= value <= COARSE_CENTER + 24:
-        raise ValueError("a pad can be tuned at most 24 semitones up or down")
+        raise ValueError("A pad can be tuned at most 24 semitones up or down.")
     return parameter_change(oscillator_address(pad, COARSE_TUNE), [value])
 
 

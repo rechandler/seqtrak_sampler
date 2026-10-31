@@ -2,6 +2,8 @@
 the sampler pads play like keys.
 
 Every pad gets the source pad's sound settings and trim, and its own Coarse Tune.
+Tuning is set from the recording's own pitch (Coarse Tune centred), not added to
+whatever the source pad is tuned to now, so loading again gives the same pads.
 "Project scale" uses the notes the SEQTRAK's own synth keys play: the project's
 selected scale and key, read from the device (Data List pp. 124-125).
 """
@@ -115,6 +117,14 @@ class KeysPanel(PadPanel):
         notes = self.notes()
         return None if notes is None else keys.shifts(notes, self.sample_box.currentData())
 
+    def source_tuning(self) -> int:
+        """Semitones the source pad is tuned by on the SEQTRAK now (0 = as recorded).
+        The captured sound includes it."""
+        pad = self.source_pad()
+        if pad is None or pad.osc is None or len(pad.osc) <= sysex.COARSE_TUNE:
+            return 0
+        return pad.osc[sysex.COARSE_TUNE] - sysex.COARSE_CENTER
+
     def _scale_chosen(self, _index: int = 0) -> None:
         project = self.using_project_scale()
         self.root_label.setVisible(not project)
@@ -199,13 +209,18 @@ class KeysPanel(PadPanel):
         self.load_btn.setEnabled(has_source and in_range and self.ready())
         self.load_btn.setToolTip("" if connected else "Connect the SEQTRAK first")
         self.undo_btn.setVisible(bool(self._last_load))
+        tuned = self.source_tuning() if has_source else 0
+        if tuned and not self.status.text():
+            self.status.setText(f"Pad {self.source.pad + 1} is tuned {tuned:+d} st on the "
+                                f"SEQTRAK now. Sample plays means the recording untuned; "
+                                f"loading sets every pad's tuning from there.")
 
     def _play_pad(self, pad: int) -> None:
         shifts = self.shifts()
         if self.source is None or shifts is None:
             return
         a, b = self._region()
-        shift = shifts[pad]
+        shift = shifts[pad] - self.source_tuning()     # the capture is already tuned
         try:
             self.window.player.play(keys.repitch(self.source.left[a:b], shift),
                                     keys.repitch(self.source.right[a:b], shift),
@@ -221,12 +236,11 @@ class KeysPanel(PadPanel):
         a, b = self._region()
         start = self.source.device_offset + a
         end = self.source.device_offset + b
-        base = source_pad.osc[sysex.COARSE_TUNE]
         name = self.source.name[:66]
         changes = []
         try:
             for i in range(keys.PADS):
-                coarse = base + shifts[i]
+                coarse = sysex.COARSE_CENTER + shifts[i]
                 label = f"{name} {keys.note_name(notes[i])}"
                 current = self.current_pad(i)
                 if i == self.source.pad:

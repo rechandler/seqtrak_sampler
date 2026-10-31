@@ -17,7 +17,7 @@ try:
 except ImportError:  # the CI test job runs without the GUI extras
     QApplication = None
 
-from seqtrak_sampler import sysex
+from seqtrak_sampler import keys, sysex
 
 try:
     from PySide6.QtCore import Qt, QTimer
@@ -508,6 +508,29 @@ class DevicePanelTests(unittest.TestCase):
         self.assertEqual((fake.pads[2]["name"], fake.pads[2]["osc"][sysex.COARSE_TUNE]),
                          ("Vox", 64))
         self.assertFalse(fake.pads[5]["assigned"])
+
+    def test_keys_tunes_from_the_recording_not_the_current_tuning(self):
+        from PySide6.QtWidgets import QMessageBox
+        fake = FakeSeqtrak()
+        fake.pads = {0: dict(name="Pluck", start=0, end=44111)}
+        w, panel = self.keys_window(fake)
+        fake.pads[0]["osc"][sysex.COARSE_TUNE] = 64 + 20     # already tuned up 20
+        w.device.request_pads()
+        panel.scale_box.setCurrentText("Major")
+        panel._scale_chosen()
+        self.assertEqual(panel.source_tuning(), 20)
+        self.assertIn("tuned +20 st on the SEQTRAK now", panel.status.text())
+        self.assertTrue(panel.load_btn.isEnabled())          # 20 + 11 would be past 24
+        played = []
+        w.player.play = lambda left, *a: played.append(len(left))
+        panel._play_pad(0)                                    # C3 from a sound 20 st up
+        self.assertEqual(played, [len(keys.repitch(panel.source.left, -20))])
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+        for _ in range(2):                                    # loading twice: same pads
+            panel._load()
+            w.device.request_pads()
+            self.assertEqual([fake.pads[i]["osc"][sysex.COARSE_TUNE] for i in range(7)],
+                             [64, 66, 68, 69, 71, 73, 75])
 
     def test_keys_with_a_chosen_scale_and_range_check(self):
         fake = FakeSeqtrak()
