@@ -414,55 +414,8 @@ def slice_messages(target: SamplerPad, source: SamplerPad, start: int, end_exclu
     return msgs
 
 
-# The sequencer. Tempo, Pattern Select and Pattern n Step are in the Data List
-# (Project Common / Track General, pp. 124-127). The rest isn't: it comes from the
-# community reference github.com/jaeggerr/seqtrak-docs (docs/04-sequencer-editing.md),
-# which verified it on hardware as noted.
+# Tempo is in the Data List (Project Common / General, p. 124).
 TEMPO = (0x30, 0x40, 0x76)                 # 2 bytes, 5-300 BPM
-SEQUENCER_STATUS = (0x01, 0x10, 0x20)      # 0 stopped, 1 playing (verified)
-SAMPLER_ROLL = 3          # the sampler's index in the synth piano roll (verified)
-TICKS_PER_STEP = 120      # one 16th step; notes sit at step * 120 + 60 (verified)
-MAX_PATTERN_STEPS = 128
-
-
-def pattern_select_address(part: int) -> tuple[int, int, int]:
-    return (0x30, 0x50 | part, 0x0F)
-
-
-def pattern_step_address(part: int, pattern: int) -> tuple[int, int, int]:
-    """Pattern 1-6 Step (length in steps, 2 bytes, 1-128); `pattern` is 0-5."""
-    return (0x30, 0x50 | part, 0x16 + 2 * pattern)
-
-
-def roll_address(op: int, block: int, index: int = 0) -> tuple[int, int, int]:
-    return (op, (block << 4) | (index >> 7), index & 0x7F)
-
-
-def roll_read(block: int, index: int) -> list[int]:
-    """Ask for piano-roll event `index` of the selected pattern. The answer carries
-    the event's 8 bytes, or none past the last event (verified on hardware)."""
-    return parameter_request(roll_address(0x75, block, index))
-
-
-def roll_add(block: int, event: list[int]) -> list[int]:
-    """Add an event (8 bytes: time MSB/LSB, type, note, velocity, off velocity, gate
-    MSB/LSB) to the selected pattern. Verified on hardware for SYNTH 1."""
-    if len(event) != 8:
-        raise ValueError("a piano-roll event is 8 bytes")
-    return parameter_change(roll_address(0x72, block), list(event))
-
-
-def roll_note(time: int, note: int, velocity: int, gate: int) -> list[int]:
-    """The 8 event bytes of a note at `time` ticks lasting `gate` ticks."""
-    if not 0 <= time <= 0x3FFF or not 1 <= gate <= 0x3FFF:
-        raise ValueError("note time or length out of range")
-    return [time >> 7, time & 0x7F, 0x00, note & 0x7F, velocity & 0x7F, 0x00,
-            gate >> 7, gate & 0x7F]
-
-
-def delete_pattern(part: int, pattern: int) -> list[int]:
-    """Clear pattern `pattern` (0-5) of a part (01 1p 37; verified on hardware)."""
-    return parameter_change((0x01, 0x10 | part, 0x37), [pattern])
 
 
 def note_on(note: int, velocity: int = 100) -> list[int]:

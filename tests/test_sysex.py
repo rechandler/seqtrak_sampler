@@ -259,25 +259,11 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class SequencerMessageTests(unittest.TestCase):
+
+class ParameterRequestTests(unittest.TestCase):
     def test_parameter_request_and_answer(self):
         self.assertEqual(sysex.parameter_request(sysex.TEMPO),
                          _hex("F0 43 30 7F 1C 0C 30 40 76 F7"))
         answer = _hex("F0 43 10 7F 1C 0C 30 40 76 00 77 F7")      # 119 BPM
         self.assertEqual(sysex.parse_parameter_change(answer), ((0x30, 0x40, 0x76), [0, 0x77]))
         self.assertIsNone(sysex.parse_parameter_change(OSC2))
-
-    def test_piano_roll_messages(self):
-        self.assertEqual(sysex.roll_read(3, 0), _hex("F0 43 30 7F 1C 0C 75 30 00 F7"))
-        self.assertEqual(sysex.roll_read(3, 200)[6:9], [0x75, 0x31, 200 - 128])
-        note = sysex.roll_note(1260, 61, 100, 480)
-        self.assertEqual(note, [1260 >> 7, 1260 & 0x7F, 0, 61, 100, 0, 480 >> 7, 480 & 0x7F])
-        self.assertEqual(sysex.roll_add(3, note),
-                         _hex("F0 43 10 7F 1C 0C 72 30 00") + note + [0xF7])
-        with self.assertRaises(ValueError):
-            sysex.roll_note(0, 60, 100, 0)
-
-    def test_pattern_addresses(self):
-        self.assertEqual(sysex.delete_pattern(10, 2), _hex("F0 43 10 7F 1C 0C 01 1A 37 02 F7"))
-        self.assertEqual(sysex.pattern_select_address(10), (0x30, 0x5A, 0x0F))
-        self.assertEqual(sysex.pattern_step_address(10, 5), (0x30, 0x5A, 0x20))

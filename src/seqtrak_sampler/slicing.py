@@ -82,23 +82,3 @@ def device_range(pad_start: int, captured_onset: int, source_onset: int,
     end = min(last_frame + 1, offset + b)
     return start, end
 
-
-TICKS_PER_STEP = 120    # the SEQTRAK sequencer's 16th step
-
-
-def pattern_notes(segments: list[tuple[int, int]], rate: int, bpm: float,
-                  notes: list[int], velocity: int = 100) -> list[tuple[int, int, int, int]]:
-    """One note per segment, as (step, note, velocity, gate ticks), so that a pattern
-    at `bpm` replays the segments where they fall in the sound: segment i plays
-    notes[i] on the 16th step nearest its start (counted from the first segment),
-    held for the segment's length."""
-    if not segments:
-        return []
-    ticks_per_second = bpm / 60 * 4 * TICKS_PER_STEP
-    origin = segments[0][0]
-    out = []
-    for (a, b), note in zip(segments, notes):
-        step = round((a - origin) / rate * ticks_per_second / TICKS_PER_STEP)
-        gate = max(1, min(0x3FFF, round((b - a) / rate * ticks_per_second)))
-        out.append((step, note, velocity, gate))
-    return out
