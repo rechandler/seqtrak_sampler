@@ -6,7 +6,7 @@ import json
 import tempfile
 import time
 from array import array
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
@@ -17,12 +17,13 @@ from PySide6.QtWidgets import (
     QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
-from .. import __version__, audio, sysex
+from .. import __version__, audio, padsound, sysex
 from ..files import FolderScanner, safe_filename, unique_path
 from ..y3s import read_y3s
 from . import device as dev
 from . import theme
 from .device import Device
+from .pad_sound import PadSoundPanel
 from .player import Player
 from .keys_mode import KeysPanel
 from .slice_mode import SlicePanel
@@ -49,6 +50,9 @@ ONSET = audio.dbfs_to_amplitude(-50.0)
 DEFAULT_LATENCY_MS = 20
 LATENCY_SEARCH_MS = 150   # a sound starting this soon after the note is the pad's start
 LATENCY_WINDOW_MS = 40    # once measured, how far from it a start may be
+SOUND_SEND_MS = 60        # pad sound changes go out at most this often while dragging
+SOUND_SETTLE_S = 2.0      # after a change, readings from the SEQTRAK don't move sliders
+LOOP_SNAP_MS = 20         # how far a loop start may move to start cleanly
 
 
 @dataclass
@@ -123,6 +127,13 @@ class MainWindow(QMainWindow):
         self._capture: sysex.SamplerPad | None = None  # pad being opened, if any
         # Messages that put back the tuning of the pad being opened, if it was tuned.
         self._capture_restore: list[list[int]] = []
+        # Pad sound editing: the pad/take whose Undo step is saved, changes waiting to
+        # go out, when the user last moved something, and each pad's one-shot length
+        # (its Loop Length while the loop is off) to put back when a loop goes off.
+        self._sound_session: tuple[int, int] | None = None
+        self._sound_pending: dict[tuple[int, str], int] = {}
+        self._sound_edit_time = 0.0
+        self._oneshot_length: dict[int, int] = {}
         self._capture_note_frame = 0  # recording frame when the pad's note was sent
         try:
             self._latencies: list[int] = json.loads(self.settings.value("latencies", "[]"))
@@ -281,6 +292,15 @@ class MainWindow(QMainWindow):
         self.name_edit.textEdited.connect(self._rename)
         self.wave = WaveformView()
         self.wave.regionChanged.connect(self._region_changed)
+        self.wave.loopChanged.connect(self._loop_moved)
+        self.pad_sound = PadSoundPanel()
+        self.pad_sound.changed.connect(self._sound_changed)
+        self.pad_sound.loopToggled.connect(self._loop_toggled)
+        self.pad_sound.hide()
+        self._sound_timer = QTimer(self)
+        self._sound_timer.setSingleShot(True)
+        self._sound_timer.setInterval(SOUND_SEND_MS)
+        self._sound_timer.timeout.connect(self._flush_sound)
         self.player.position.connect(self.wave.set_playhead)
         self.player.stopped.connect(lambda: self.play_btn.setIcon(play_icon()))
         self.player.failed.connect(lambda text: self._show_toast(text, error=True))
@@ -336,6 +356,7 @@ class MainWindow(QMainWindow):
         card_col.addLayout(name_row)
         card_col.addWidget(self.wave, 1)
         card_col.addLayout(controls)
+        card_col.addWidget(self.pad_sound)
         card = QWidget()
         card.setObjectName("card")
         card.setAttribute(Qt.WA_StyledBackground)
@@ -600,7 +621,9 @@ class MainWindow(QMainWindow):
             return
         self.name_edit.setText(take.name)
         self.wave.set_sound(take.left, take.right, take.rate, take.start, take.end)
+        self._sound_session = None
         self._update_length()
+        self._update_pad_sound(force=True)
 
     def _update_length(self) -> None:
         take = self.current()
@@ -854,6 +877,8 @@ class MainWindow(QMainWindow):
         self.log_btn.setVisible(state not in (dev.UNAVAILABLE, dev.DISCONNECTED))
         self.stored_btn.setVisible(state == dev.CONNECTED)
         self.pads_list.setVisible(state == dev.CONNECTED)
+        if hasattr(self, "pad_sound"):
+            self._update_pad_sound(force=True)
         self._update_send_button()
 
     def _copy_midi_log(self) -> None:
@@ -919,6 +944,7 @@ class MainWindow(QMainWindow):
                 self._show_toast(f"Pad {pad.pad + 1} has a new sample \u201c{pad.name}\u201d. "
                                  f"Click it in the pad list to open it.")
         self._refresh_pads()
+        self._update_pad_sound()
 
     def _refresh_pads(self) -> None:
         for i in range(sysex.SAMPLER_PADS):
@@ -1103,6 +1129,7 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.Yes:
             return
         self._push_history(pad, take.label if new_name else pad.name)
+        self._sound_session = None
         self.device.send_trim(msgs, pad.pad)
         if new_name:
             take.device_name = sysex.decode_name(sysex.encode_name(new_name))
@@ -1114,6 +1141,100 @@ class MainWindow(QMainWindow):
             take.start, take.end = 0, len(take.left)
             self._show_take(self.list.currentRow())
         self._show_toast(f"\u2713  Applied to pad {pad.pad + 1}")
+
+    # Pad sound: level, pan, pitch, envelope, filter and loop, live on the SEQTRAK
+
+    def _update_pad_sound(self, force: bool = False) -> None:
+        """Show the Pad sound strip for a pad that's open, and draw its envelope and
+        loop. Fresh readings from the SEQTRAK don't move the sliders while the user is
+        mid-change (they may predate what was just sent)."""
+        take = self.current()
+        pad = self._pad_for_take(take)
+        show = pad is not None and pad.osc is not None
+        self.pad_sound.setVisible(show)
+        if not show:
+            self.wave.set_envelope(None)
+            self.wave.set_loop(None)
+            return
+        if force or time.monotonic() - self._sound_edit_time > SOUND_SETTLE_S:
+            self.pad_sound.set_pad(pad)
+        self._draw_pad_sound(pad, take)
+
+    def _draw_pad_sound(self, pad: sysex.SamplerPad, take: Take) -> None:
+        by = padsound.BY_KEY
+        self.wave.set_envelope((
+            padsound.envelope_seconds(padsound.value(pad, by["attack"]) or 0),
+            padsound.envelope_seconds(padsound.value(pad, by["release"]) or 0),
+            (padsound.value(pad, by["level"]) or 0) / 127))
+        start = padsound.loop_start(pad)
+        self.wave.set_loop(None if start is None else
+                           (start - take.device_offset, pad.end - take.device_offset + 1))
+
+    def _begin_sound_edit(self, pad: sysex.SamplerPad) -> None:
+        """Save one Undo step per pad per time it's opened, before the first change."""
+        session = (pad.pad, id(self.current()))
+        if self._sound_session != session:
+            self._push_history(pad, pad.name)
+            self._sound_session = session
+            self._update_send_button()
+        self._sound_edit_time = time.monotonic()
+
+    def _changed_pad(self, pad: sysex.SamplerPad) -> None:
+        """Keep the app's copy of the pad in step with what was just sent."""
+        self._pads[pad.pad] = pad
+        self._draw_pad_sound(pad, self.current())
+
+    def _sound_changed(self, key: str, value: int) -> None:
+        pad = self._pad_for_take(self.current())
+        if pad is None:
+            return
+        self._begin_sound_edit(pad)
+        self._sound_pending[(pad.pad, key)] = value
+        self._sound_timer.start()
+        self._changed_pad(padsound.with_value(pad, padsound.BY_KEY[key], value))
+
+    def _flush_sound(self) -> None:
+        pending, self._sound_pending = self._sound_pending, {}
+        for (index, key), value in pending.items():
+            self.device.send(padsound.message(index, padsound.BY_KEY[key], value))
+
+    def _loop_point(self, take: Take, pad: sysex.SamplerPad, wanted: int) -> int:
+        """The pad frame near `wanted` (a frame of the take) where a loop starts
+        cleanly: matched to how the sound continues past the end point."""
+        end = pad.end - take.device_offset
+        wanted = max(0, min(wanted, end - padsound.MIN_LOOP))
+        window = take.rate * LOOP_SNAP_MS // 1000
+        return padsound.matched_start(take.left, take.right, wanted, end,
+                                      window) + take.device_offset
+
+    def _loop_toggled(self, on: bool) -> None:
+        take = self.current()
+        pad = self._pad_for_take(take)
+        if pad is None or on == pad.loop_on:
+            return
+        self._flush_sound()
+        self._begin_sound_edit(pad)
+        if on:
+            self._oneshot_length[pad.pad] = pad.last_frame
+            # Start with the second half of what plays looping; drag to change it.
+            middle = (pad.start + pad.end) // 2 - take.device_offset
+            length = padsound.loop_length_for(pad, self._loop_point(take, pad, middle))
+        else:
+            length = self._oneshot_length.pop(pad.pad, pad.end)
+        for msg in padsound.loop_messages(pad.pad, on, length):
+            self.device.send(msg)
+        self._changed_pad(replace(pad, loop_on=on, loop_length=length))
+
+    def _loop_moved(self, frame: int) -> None:
+        take = self.current()
+        pad = self._pad_for_take(take)
+        if pad is None or not pad.loop_on:
+            return
+        self._flush_sound()
+        self._begin_sound_edit(pad)
+        length = padsound.loop_length_for(pad, self._loop_point(take, pad, frame))
+        self.device.send(padsound.loop_messages(pad.pad, True, length)[1])
+        self._changed_pad(replace(pad, loop_length=length))
 
     # Undo and reload
 
@@ -1134,6 +1255,8 @@ class MainWindow(QMainWindow):
         self._save_history()
 
     def _undo_trim(self) -> None:
+        self._flush_sound()
+        self._sound_session = None
         pad = self._pad_for_take(self.current())
         if pad is not None and self.undo_pad(pad.pad):
             self._show_toast(f"\u21b6  Pad {pad.pad + 1} is back to how it was before the "

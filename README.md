@@ -98,6 +98,17 @@ comes alive:
   plays but not extend it past its current start or end, and the recording includes the
   pad's effects. Silence at the start of a pad is shown, so you can trim it away; the trim lines up with the device to within a few milliseconds.
   `.Y3S` files exported from a pad can be applied back to it the same way.
+- **Pad sound:** when a pad is open, the strip under the waveform changes it live on
+  the SEQTRAK: Volume, Pan, Pitch and Fine, Attack and Release (the SEQTRAK's Decay
+  knob), and the pad's own filter Cutoff and Resonance. The volume envelope is drawn
+  over the waveform: the attack at the start, the release (dashed) after the end. Its
+  times are approximate; the Data List doesn't say how the settings map to seconds.
+  Double-click Pan, Pitch or Fine's value to centre it.
+- **Loop:** switch it on and the pad loops the end of its sample while held. Drag the
+  green marker to set where the loop starts; it settles on the nearby point that
+  continues smoothly from the end point, so the loop doesn't click. Switched off, the
+  pad is one-shot again. (The loop is assumed to run from end minus Loop Length to the
+  end point; this hasn't been checked on a SEQTRAK yet.)
 - **Undo / Reload:** **Undo** puts the pad back the way it was before the last Apply,
   one step at a time, back to how it was before the app first changed it (the history is
   kept between launches). **Reload** reads the pad from the SEQTRAK again and reopens it,

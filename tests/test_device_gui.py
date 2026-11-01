@@ -353,6 +353,65 @@ class DevicePanelTests(unittest.TestCase):
                              for m in fake.sent[before:]))
         self.assertEqual(w._capture_restore, [])
 
+    def test_pad_sound_edits_live_and_undoes(self):
+        import math
+        fake = FakeSeqtrak()
+        fake.pads[1] = dict(name="Vox", start=1000, end=89199)      # 2 s
+        w = self.make_window(fake)
+        sine = array("h", [int(8000 * math.sin(2 * math.pi * 110 * i / 44100))
+                           for i in range(500 + 88200 + 3000)])
+        w._captured(w._pads[1], sine, array("h", sine), 44100)
+        panel = w.pad_sound
+        self.assertTrue(panel.isVisibleTo(w))
+        self.assertEqual(panel.value("level"), 100)
+        self.assertIsNotNone(w.wave._envelope)
+        self.assertIsNone(w.wave._loop)
+
+        panel._sliders["level"].setValue(80)
+        panel._sliders["pan"].setValue(40)
+        panel._sliders["cutoff"].setValue(200)
+        panel._sliders["release"].setValue(90)
+        w._flush_sound()                          # what the timer does
+        p = fake.pads[1]
+        self.assertEqual((p["level"], p["osc"][0x0B], p["osc"][0x37]), (80, 40, 90))
+        self.assertEqual(p["filt"][1:3], [200 >> 7, 200 & 0x7F])
+        self.assertEqual(len(w._history["Vox"]), 1)              # one Undo step
+        self.assertEqual(w.wave._envelope[2], 80 / 127)
+
+        # Loop on: the second half, starting where it continues smoothly from the end.
+        panel.loop_box.setChecked(True)
+        self.assertTrue(p["loop_on"])
+        start = 89199 - p["loop_length"] + 1
+        self.assertLessEqual(abs(start - (1000 + 89199) // 2), 44100 * 20 // 1000)
+        period = 44100 / 110
+        cycles = (89199 + 1 - start) / period
+        self.assertAlmostEqual(cycles, round(cycles), delta=0.05)
+        self.assertEqual(w.wave._loop, (start - 1000, 89199 - 1000 + 1))
+        # Dragging the loop marker moves it (snapped too).
+        w.wave.loopChanged.emit(20000)
+        start2 = 89199 - p["loop_length"] + 1
+        self.assertLessEqual(abs(start2 - 1000 - 20000), 44100 * 20 // 1000)
+        # Off: the one-shot length comes back.
+        panel.loop_box.setChecked(False)
+        self.assertEqual((p["loop_on"], p["loop_length"]), (False, 89199))
+        self.assertEqual(len(w._history["Vox"]), 1)
+
+        w.device.request_pads()
+        w._undo_trim()
+        self.assertEqual((p["level"], p["osc"][0x0B], p["osc"][0x37]), (100, 64, 50))
+        self.assertEqual(p["filt"][1:3], [0x01, 0x20])
+        self.assertEqual((p["loop_on"], p["loop_length"]), (False, 89199))
+
+    def test_pad_sound_hidden_for_plain_samples(self):
+        fake = FakeSeqtrak()
+        w = self.make_window(fake)
+        tmp = Path(tempfile.mkdtemp())
+        y3s = tmp / "Other.Y3S"
+        make_y3s(y3s, [[0] * 100 + [3000] * 4000 + [0] * 100] * 2)
+        w.add_files([y3s])
+        self.assertFalse(w.pad_sound.isVisibleTo(w))
+        self.assertIsNone(w.wave._envelope)
+
     def test_leading_silence_is_kept_and_aligned(self):
         from PySide6.QtWidgets import QMessageBox
         fake = FakeSeqtrak()

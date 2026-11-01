@@ -32,6 +32,8 @@ class WaveformView(QWidget):
     regionChanged = Signal(int, int)
     markersChanged = Signal(object)  # list[int], in slice mode
     markerRefused = Signal()         # a click would have made more than max_markers
+    loopMoved = Signal(int)          # the loop marker is being dragged (frame)
+    loopChanged = Signal(int)        # ... and was let go there
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -51,6 +53,9 @@ class WaveformView(QWidget):
         self._markers: list[int] = []
         self._drag_marker: int | None = None  # index into _markers
         self.max_markers: int | None = None   # cuts allowed inside the region
+        # Pad sound overlays (Edit mode): the volume envelope and the loop.
+        self._envelope: tuple[float, float, float] | None = None  # attack s, release s, level
+        self._loop: tuple[int, int] | None = None   # loop start, loop end (frames)
 
     def set_sound(self, left: array, right: array, rate: int, start: int, end: int) -> None:
         self._channels = [_peaks(left, PEAK_BUCKETS), _peaks(right, PEAK_BUCKETS)]
@@ -81,6 +86,16 @@ class WaveformView(QWidget):
 
     def markers(self) -> list[int]:
         return list(self._markers)
+
+    def set_envelope(self, envelope: tuple[float, float, float] | None) -> None:
+        """Draw the volume envelope: (attack seconds, release seconds, level 0-1)."""
+        self._envelope = envelope
+        self.update()
+
+    def set_loop(self, loop: tuple[int, int] | None) -> None:
+        """Shade the loop from loop[0] to loop[1] (frames), with a marker to drag."""
+        self._loop = loop
+        self.update()
 
     def set_playhead(self, frame: int | None) -> None:
         self._playhead = frame
@@ -191,6 +206,10 @@ class WaveformView(QWidget):
             p.drawText(QRectF(area.left() + 4, lane.top() + 2, 20, 14), Qt.AlignLeft, name)
 
         self._paint_ruler(p, area)
+        if self._loop is not None:
+            self._paint_loop(p, selection)
+        if self._envelope is not None:
+            self._paint_envelope(p, area, selection)
         if self._slicing:
             self._paint_slices(p, selection)
         for which, x in (("start", sx), ("end", ex)):
@@ -200,6 +219,46 @@ class WaveformView(QWidget):
             px = self._x(self._playhead)
             p.setPen(QPen(QColor(theme.ACCENT), 2))
             p.drawLine(QPointF(px, selection.top()), QPointF(px, selection.bottom()))
+
+    def _paint_loop(self, p: QPainter, selection: QRectF) -> None:
+        a, b = self._loop
+        xa, xb = self._x(a), self._x(b)
+        green = QColor(theme.OK)
+        shade = QColor(green)
+        shade.setAlpha(28)
+        p.fillRect(QRectF(xa, selection.top(), xb - xa, selection.height()), shade)
+        p.setPen(QPen(green, 2))
+        p.drawLine(QPointF(xa, selection.top()), QPointF(xa, selection.bottom()))
+        tag = QRectF(xa + 4, selection.top() + 4, 42, 16)
+        p.setPen(Qt.NoPen)
+        p.setBrush(green)
+        p.drawRoundedRect(tag, 4, 4)
+        font = QFont(self.font())
+        font.setPixelSize(10)
+        font.setWeight(QFont.DemiBold)
+        p.setFont(font)
+        p.setPen(QColor(theme.BG))
+        p.drawText(tag, Qt.AlignCenter, "LOOP")
+
+    def _paint_envelope(self, p: QPainter, area: QRectF, selection: QRectF) -> None:
+        attack, release, level = self._envelope
+        top = area.top() + 4
+        bottom = area.bottom() - 2
+        peak = bottom - (bottom - top) * max(0.0, min(1.0, level))
+        sx, ex = self._x(self._start), self._x(self._end)
+        ax = min(ex, self._x(self._start + int(attack * self._rate)))
+        rx = self._x(self._end + int(release * self._rate))
+        color = QColor(theme.ACCENT)
+        p.setPen(QPen(color, 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawPolyline(QPolygonF([QPointF(sx, bottom), QPointF(ax, peak), QPointF(ex, peak)]))
+        # The release plays after the note ends, past the end of what's selected.
+        p.save()
+        p.setClipRect(QRectF(ex, area.top() - PAD, area.right() + PAD - ex,
+                             area.height() + 2 * PAD))
+        p.setPen(QPen(color, 2, Qt.DashLine))
+        p.drawLine(QPointF(ex, peak), QPointF(max(rx, ex + 1), bottom))
+        p.restore()
 
     def _paint_slices(self, p: QPainter, selection: QRectF) -> None:
         inside = [m for m in self._markers if self._start < m < self._end]
@@ -289,6 +348,9 @@ class WaveformView(QWidget):
             return None
         return "start" if ds <= de else "end"
 
+    def _loop_at(self, x: float) -> bool:
+        return self._loop is not None and abs(x - self._x(self._loop[0])) <= HANDLE_GRAB_PX
+
     def _marker_at(self, x: float) -> int | None:
         best = None
         for i, m in enumerate(self._markers):
@@ -311,6 +373,9 @@ class WaveformView(QWidget):
         if event.button() != Qt.LeftButton:
             return
         self._dragging = self._handle_at(x)
+        if self._dragging is None and self._loop_at(x):
+            self._dragging = "loop"
+            return
         if self._dragging is None and self._slicing:
             i = self._marker_at(x)
             if i is None:
@@ -330,6 +395,12 @@ class WaveformView(QWidget):
 
     def mouseMoveEvent(self, event):
         x = event.position().x()
+        if self._dragging == "loop":
+            frame = min(max(self._frame(x), self._start), self._loop[1] - 1)
+            self._loop = (frame, self._loop[1])
+            self.update()
+            self.loopMoved.emit(frame)
+            return
         if self._dragging == "marker":
             frame = min(max(self._frame(x), self._start + 1), self._end - 1)
             self._markers[self._drag_marker] = frame
@@ -339,6 +410,8 @@ class WaveformView(QWidget):
             hover = self._handle_at(x) if self._channels else None
             if hover is None and self._slicing and self._marker_at(x) is not None:
                 hover = "marker"
+            if hover is None and self._loop_at(x):
+                hover = "loop"
             if hover != self._hover:
                 self._hover = hover
                 self.setCursor(Qt.SizeHorCursor if hover else Qt.ArrowCursor)
@@ -353,6 +426,8 @@ class WaveformView(QWidget):
         self.regionChanged.emit(self._start, self._end)
 
     def mouseReleaseEvent(self, event):
+        if self._dragging == "loop":
+            self.loopChanged.emit(self._loop[0])
         if self._dragging == "marker":
             self._markers.sort()
             self.markersChanged.emit(self.markers())

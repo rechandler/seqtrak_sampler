@@ -175,6 +175,31 @@ QComboBox QAbstractItemView {{
     selection-background-color: {SURFACE_3};
     selection-color: {TEXT};
 }}
+QSlider::groove:horizontal {{
+    height: 4px;
+    background: {SURFACE_3};
+    border-radius: 2px;
+}}
+QSlider::sub-page:horizontal {{
+    background: {ACCENT};
+    border-radius: 2px;
+}}
+QSlider::sub-page:horizontal:disabled {{
+    background: {SURFACE_3};
+}}
+QSlider::handle:horizontal {{
+    background: {TEXT};
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+}}
+QSlider::handle:horizontal:hover {{
+    background: #ffffff;
+}}
+QSlider::handle:horizontal:disabled {{
+    background: {FAINT};
+}}
 QFrame#segmented {{
     background: {SURFACE_2};
     border: 1px solid {BORDER};
