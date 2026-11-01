@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSizePolicy, QVBoxLayout,
+    QComboBox, QHBoxLayout, QLabel, QMessageBox, QSizePolicy, QVBoxLayout,
 )
 
 from .. import keys, sysex
@@ -38,7 +38,6 @@ class KeysPanel(PadPanel):
         super().__init__(window)
         self._project_notes: list[int] | None = None
         self._reading_scale = False
-        self.count = keys.PADS          # pads 1..count get the sample; the rest keep theirs
 
         title = QLabel("Pads as keys")
         title.setObjectName("panelTitle")
@@ -84,24 +83,6 @@ class KeysPanel(PadPanel):
         row.addWidget(self.root_label)
         row.addWidget(self.root_box)
         row.addWidget(self.scale_info)
-        row.addSpacing(16)
-        pads_label = QLabel("Pads")
-        pads_label.setObjectName("muted")
-        self.minus_btn = QPushButton("−")
-        self.plus_btn = QPushButton("+")
-        for b in (self.minus_btn, self.plus_btn):
-            b.setFixedWidth(36)
-            b.setToolTip("How many pads get the sample, from pad 1. The rest keep theirs.")
-        self.minus_btn.clicked.connect(lambda: self.set_count(self.count - 1))
-        self.plus_btn.clicked.connect(lambda: self.set_count(self.count + 1))
-        self.count_label = QLabel()
-        self.count_label.setObjectName("segmentCount")
-        self.count_label.setAlignment(Qt.AlignCenter)
-        self.count_label.setFixedWidth(28)
-        row.addWidget(pads_label)
-        row.addWidget(self.minus_btn)
-        row.addWidget(self.count_label)
-        row.addWidget(self.plus_btn)
         row.addSpacing(12)
         hint = QLabel("Click a pad to hear it")
         hint.setToolTip("The handles on the waveform set the part every pad plays")
@@ -139,10 +120,6 @@ class KeysPanel(PadPanel):
             return self._project_notes
         return keys.scale_notes(self.root_box.currentData(),
                                 keys.SCALES[self.scale_box.currentText()])
-
-    def set_count(self, count: int) -> None:
-        self.count = max(1, min(keys.PADS, count))
-        self._refresh()
 
     def shifts(self) -> list[int] | None:
         notes = self.notes()
@@ -219,9 +196,6 @@ class KeysPanel(PadPanel):
         has_source = self.source is not None
         tiles = []
         for i in range(keys.PADS):
-            if i >= self.count:
-                tiles.append(("", "keeps its sample", "unused"))
-                continue
             if notes is None or not has_source:
                 name = keys.note_name(notes[i]) if notes else ""
                 tiles.append((name, "", "unused"))
@@ -235,14 +209,9 @@ class KeysPanel(PadPanel):
             tiles.append((keys.note_name(notes[i]), status, kind))
         self.pad_map.set_tiles(tiles)
 
-        in_range = shifts is not None and all(abs(s) <= keys.MAX_SHIFT
-                                              for s in shifts[:self.count])
+        in_range = shifts is not None and all(abs(s) <= keys.MAX_SHIFT for s in shifts)
         connected = self.window.device.state == dev.CONNECTED
-        self.count_label.setText(str(self.count))
-        self.minus_btn.setEnabled(self.count > 1)
-        self.plus_btn.setEnabled(self.count < keys.PADS)
-        self.load_btn.setText("Load to pad 1" if self.count == 1
-                              else f"Load to pads 1–{self.count}")
+        self.load_btn.setText(f"Load to pads 1–{keys.PADS}")
         self.load_btn.setEnabled(has_source and in_range and self.ready())
         self.load_btn.setToolTip("" if connected else "Connect the SEQTRAK first")
         self.undo_btn.setVisible(bool(self._last_load))
@@ -254,7 +223,7 @@ class KeysPanel(PadPanel):
 
     def _play_pad(self, pad: int) -> None:
         shifts = self.shifts()
-        if self.source is None or shifts is None or pad >= self.count:
+        if self.source is None or shifts is None:
             return
         a, b = self._region()
         shift = shifts[pad]
@@ -266,7 +235,7 @@ class KeysPanel(PadPanel):
     def _load(self) -> None:
         source_pad = self.source_pad()
         notes, shifts = self.notes(), self.shifts()
-        if source_pad is None or notes is None or not self._confirm_load(source_pad):
+        if source_pad is None or notes is None or not self.confirm_pads(list(range(keys.PADS))):
             return
         a, b = self._region()
         start = self.source.device_offset + a
@@ -274,7 +243,7 @@ class KeysPanel(PadPanel):
         name = self.source.name[:66]
         changes = []
         try:
-            for i in range(self.count):
+            for i in range(keys.PADS):
                 coarse = sysex.COARSE_CENTER + shifts[i]
                 label = f"{name} {keys.note_name(notes[i])}"
                 current = self.current_pad(i)
@@ -290,29 +259,7 @@ class KeysPanel(PadPanel):
             QMessageBox.warning(self, "Load to pads", str(e))
             return
         self.apply(changes)
-        pads = "Pad 1 plays" if self.count == 1 else f"Pads 1–{self.count} play"
-        self.status.setText(f"✓  {pads} "
-                            + " ".join(keys.note_name(n) for n in notes[:self.count])
+        self.status.setText(f"✓  Pads 1–{keys.PADS} play "
+                            + " ".join(keys.note_name(n) for n in notes)
                             + ". Play them on the SEQTRAK; Undo puts them back.")
         self._refresh()
-
-    def _confirm_load(self, source_pad: sysex.SamplerPad) -> bool:
-        """Say what loading does, pad by pad, and ask. Every pad loaded ends up playing
-        the source's recording, so picking another of them later gets the same sound."""
-        pads = "pad 1" if self.count == 1 else f"pads 1–{self.count}"
-        lines = [f"Load {pads} with pad {self.source.pad + 1}'s recording "
-                 f"(“{source_pad.name}”), each tuned to its note?"]
-        others = [f"pad {i + 1} (“{p.name}”)" for i in range(self.count)
-                  if i != self.source.pad and (p := self.window._pads.get(i)) is not None
-                  and not p.empty]
-        if others:
-            lines.append("This replaces the samples on " + ", ".join(others) + ". They "
-                         "stay on the SEQTRAK, and Undo brings them back.")
-        if self.count < keys.PADS:
-            lines.append(f"Pad {keys.PADS} keeps its sample." if self.count + 1 == keys.PADS
-                         else f"Pads {self.count + 1}–{keys.PADS} keep their samples.")
-        else:
-            lines.append("All seven pads will play this one recording. To keep other "
-                         "samples on some pads, use fewer Pads.")
-        answer = QMessageBox.question(self, "Load to pads", "\n\n".join(lines))
-        return answer == QMessageBox.Yes

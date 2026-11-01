@@ -629,49 +629,6 @@ class DevicePanelTests(unittest.TestCase):
         self.assertIsNone(w.player.output_id)
         self.assertEqual(w.settings.value("listen_on"), "")
 
-    def test_keys_can_leave_the_last_pads_alone(self):
-        from PySide6.QtWidgets import QMessageBox
-        fake = FakeSeqtrak()
-        fake.pads = {0: dict(name="Pluck", start=0, end=44111),
-                     2: dict(name="Vox", start=0, end=88207),
-                     5: dict(name="Kick", start=0, end=22055)}
-        w, panel = self.keys_window(fake)
-        panel.scale_box.setCurrentText("Major")
-        panel._scale_chosen()
-        panel.set_count(4)
-        self.assertEqual(panel.load_btn.text(), "Load to pads 1–4")
-        self.assertEqual([t[1:] for t in panel.pad_map._tiles[4:]],
-                         [("keeps its sample", "unused")] * 3)
-        asked = []
-        QMessageBox.question = staticmethod(
-            lambda _p, _t, text, *a, **k: asked.append(text) or QMessageBox.Yes)
-        panel._load()
-        w.device.request_pads()
-        self.assertIn("Load pads 1–4 with pad 1's recording (“Pluck”), each tuned to its "
-                      "note?", asked[0])
-        self.assertIn("This replaces the samples on pad 3 (“Vox”). They stay on the "
-                      "SEQTRAK, and Undo brings them back.", asked[0])
-        self.assertIn("Pads 5–7 keep their samples.", asked[0])
-        self.assertEqual([fake.pads[i]["osc"][sysex.COARSE_TUNE] for i in range(4)],
-                         [64, 66, 68, 69])
-        self.assertEqual((fake.pads[5]["name"], fake.pads[5]["wave"]), ("Kick", 405))
-        self.assertFalse(fake.pads[4]["assigned"])
-        self.assertIn("Pads 1–4 play C3 D3 E3 F3", panel.status.text())
-        # Now the Source list shows which pads share pad 1's recording.
-        labels = [panel.source_box.itemText(i) for i in range(panel.source_box.count())]
-        self.assertEqual(labels[0], "Pad 1  ·  Pluck C3")
-        self.assertEqual(labels[1], "Pad 2  ·  Pluck D3  ·  same recording as pad 1")
-        self.assertEqual(labels[-1], "Pad 6  ·  Kick")
-        # With all seven, the dialog says so.
-        panel.set_count(7)
-        panel._load()
-        self.assertIn("All seven pads will play this one recording", asked[-1])
-        panel.set_count(6)
-        self.assertEqual(panel.load_btn.text(), "Load to pads 1–6")
-        panel.set_count(0)
-        self.assertEqual(panel.count, 1)
-        self.assertEqual(panel.load_btn.text(), "Load to pad 1")
-
     def test_keys_with_a_chosen_scale_and_range_check(self):
         fake = FakeSeqtrak()
         fake.pads = {0: dict(name="Pluck", start=0, end=44111)}
