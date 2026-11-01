@@ -59,9 +59,14 @@ melodically: every pad gets the same sample, each tuned to a note of a scale.
    a **Root**.
 4. **Pad map:** each pad shows its note and how far it's tuned. Click one to hear it.
    A pad can be tuned at most 24 semitones up or down; past that, loading is off.
-5. **Load to pads 1–7:** each pad gets the source pad's sound settings and trim, and
-   its own tuning (Coarse Tune), named "Source C3", "Source D3", … No audio is copied.
-   **Undo** puts every pad back.
+5. **Pads:** how many pads get the sample, from pad 1 (all 7 by default). The rest keep
+   their own samples, so you can have a melodic sample on pads 1–4 and drums on 5–7.
+6. **Load to pads:** each pad gets the source pad's sound settings and trim, and its
+   own tuning (Coarse Tune), named "Source C3", "Source D3", … No audio is copied. The
+   app says exactly which pads change and asks first. **Undo** puts every pad back.
+
+Pads loaded this way all play one recording, so the **Source** list marks them ("same
+recording as pad 1"): picking another of them gets the same sound.
 
 ### Where you hear it
 

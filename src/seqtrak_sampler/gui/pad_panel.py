@@ -135,10 +135,19 @@ class PadPanel(QWidget):
         current = self.source_box.currentData()
         self.source_box.blockSignals(True)
         self.source_box.clear()
+        first_with: dict[int, int] = {}      # recording (wave) -> first pad playing it
         for i in range(sysex.SAMPLER_PADS):
             pad = self.window._pads.get(i)
-            if pad is not None and not pad.empty:
-                self.source_box.addItem(f"Pad {i + 1}  ·  {pad.name}", ("pad", i))
+            if pad is None or pad.empty:
+                continue
+            label = f"Pad {i + 1}  ·  {pad.name}"
+            if pad.wave:
+                owner = first_with.setdefault(pad.wave, i)
+                if owner != i:
+                    # Slice and Keys put one recording on several pads: say so, since
+                    # picking another of them gets the same sound.
+                    label += f"  ·  same recording as pad {owner + 1}"
+            self.source_box.addItem(label, ("pad", i))
         if not self.source_box.count():
             self.source_box.addItem("No pads with a sample", None)
         self.source_box.setCurrentIndex(max(0, self._index_of(current)))
